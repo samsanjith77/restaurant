@@ -7,7 +7,7 @@ from .models import *
 import json
 from django.db.models import Sum, Count, F
 from django.utils.dateparse import parse_datetime,parse_date
-
+from .print_utils import print_order_bill 
 from django.utils import timezone
 from django.http import JsonResponse
 from django.utils import timezone
@@ -50,9 +50,8 @@ class CreateOrderView(View):
             data = json.loads(request.body)
             items_data = data.get('items', [])
             frontend_total = float(data.get('total_amount', 0))
-            order_type = data.get('order_type', 'dine_in')  # default dine_in
+            order_type = data.get('order_type', 'dine_in')
 
-            # Create order temporarily
             order = Order.objects.create(total_amount=0, order_type=order_type)
             backend_total = 0
 
@@ -71,7 +70,6 @@ class CreateOrderView(View):
                     price=price
                 )
 
-            # Check total amount matches
             if frontend_total != float(backend_total):
                 order.delete()
                 return JsonResponse({
@@ -80,6 +78,12 @@ class CreateOrderView(View):
 
             order.total_amount = backend_total
             order.save()
+
+            # ✅ Print the order bill
+            try:
+                print_order_bill(order)
+            except Exception as e:
+                print("⚠️ Printing failed:", e)
 
             order_data = {
                 "id": order.id,
@@ -97,7 +101,7 @@ class CreateOrderView(View):
             }
 
             return JsonResponse({
-                "message": "Order created successfully!",
+                "message": "Order created successfully & bill printed!",
                 "order": order_data
             }, status=201)
 
@@ -105,7 +109,7 @@ class CreateOrderView(View):
             return JsonResponse({"error": "Invalid dish ID"}, status=400)
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
-
+        
 @method_decorator(csrf_exempt, name='dispatch')
 class OrderHistoryView(View):
     def post(self, request):
