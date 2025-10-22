@@ -40,7 +40,10 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'corsheaders',
-    'billing_app'
+    'rest_framework',
+    'rest_framework_simplejwt',
+    'billing_app',
+    'accounts'
 ]
 
 MIDDLEWARE = [
@@ -81,6 +84,19 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'restaurant.wsgi.application'
 
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+}
+
+from datetime import timedelta
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=720),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+}
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases

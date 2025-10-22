@@ -21,7 +21,9 @@ from django.urls import path,include
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('bill/', include('billing_app.urls')),  # all billing urls under /api/
+    path('bill/', include('billing_app.urls')), 
+    path('accounts/', include('accounts.urls')),
+    # all billing urls under /api/
 ]
 
 # Serve media files in development
