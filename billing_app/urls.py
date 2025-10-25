@@ -16,10 +16,7 @@ urlpatterns = [
     path('expenses/filter/', ExpenseFilterView.as_view(), name='expenses_filter'),
     path('persons/add/', PersonCreateView.as_view(), name='add_person'),
     path('expenses/add/', ExpenseCreateView.as_view(), name='add_expense'),
-    
-    path('analytics/top-selling/', top_selling_dishes, name='top_selling_dishes'),
-    path('analytics/daily-revenue/', daily_revenue, name='daily_revenue'),
-    path('analytics/avg-order-value/', avg_order_value, name='avg_order_value'),
-    path('analytics/order-type-dist/', order_type_distribution, name='order_type_distribution'),
-    path('analytics/top-revenue-dishes/', top_revenue_dishes, name='top_revenue_dishes'),
+
+    path('analytics/summary/', AnalyticsSummaryView.as_view(), name='analytics_summary'),
+    path('analytics/worker-expense/', WorkerExpenseByDateView.as_view(), name='worker_expense_by_date'),
 ]

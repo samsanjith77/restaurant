@@ -12,7 +12,10 @@ from django.utils import timezone
 from django.http import JsonResponse
 from django.utils import timezone
 from datetime import timedelta
-
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from datetime import date
+from rest_framework.views import APIView
 class DishListView(View):
     def get(self, request):
         dishes = Dish.objects.all()
@@ -534,54 +537,73 @@ class ExpenseCreateView(View):
 
 
 
+class AnalyticsSummaryView(APIView):
+    permission_classes = [IsAuthenticated]
 
+    def get(self, request):
+        """
+        Analytics summary API:
+        - Default: Shows today's income, expense, and balance
+        - ?filter=all → Shows all-time totals
+        - ?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD → Shows data for that range
+        """
+        filter_type = request.GET.get('filter', None)
+        start_date_str = request.GET.get('start_date')
+        end_date_str = request.GET.get('end_date')
 
+        # Case 1️⃣: Date Range Filter
+        if start_date_str and end_date_str:
+            start_date = parse_date(start_date_str)
+            end_date = parse_date(end_date_str)
+            if not start_date or not end_date:
+                return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=400)
 
+            income = Order.objects.filter(created_at__date__range=[start_date, end_date]).aggregate(total=Sum('total_amount'))['total'] or 0
+            expense = Expense.objects.filter(timestamp__date__range=[start_date, end_date]).aggregate(total=Sum('amount'))['total'] or 0
+            label = f"From {start_date} to {end_date}"
 
-# 2️⃣ Top 5 selling dishes (by quantity)
-def top_selling_dishes(request):
-    top_dishes = (
-        OrderItem.objects
-        .values('dish__name')
-        .annotate(total_sold=Sum('quantity'))
-        .order_by('-total_sold')[:5]
-    )
-    return JsonResponse({'top_selling_dishes': list(top_dishes)})
+        # Case 2️⃣: All-Time Data
+        elif filter_type == 'all':
+            income = Order.objects.aggregate(total=Sum('total_amount'))['total'] or 0
+            expense = Expense.objects.aggregate(total=Sum('amount'))['total'] or 0
+            label = "All-Time Data"
 
+        # Case 3️⃣: Default → Today's Data
+        else:
+            today = date.today()
+            income = Order.objects.filter(created_at__date=today).aggregate(total=Sum('total_amount'))['total'] or 0
+            expense = Expense.objects.filter(timestamp__date=today).aggregate(total=Sum('amount'))['total'] or 0
+            label = f"Today ({today})"
 
-# 3️⃣ Total revenue per day
-def daily_revenue(request):
-    revenue_data = (
-        Order.objects
-        .values('created_at__date')
-        .annotate(total_revenue=Sum('total_amount'))
-        .order_by('created_at__date')
-    )
-    return JsonResponse({'daily_revenue': list(revenue_data)})
+        balance = income - expense
 
+        return Response({
+            'label': label,
+            'total_income': float(income),
+            'total_expense': float(expense),
+            'balance': float(balance)
+        })
+        
+class WorkerExpenseByDateView(APIView):
+    permission_classes = [IsAuthenticated]
 
-# 4️⃣ Average order value
-def avg_order_value(request):
-    avg_value = Order.objects.aggregate(avg_value=Sum('total_amount') / Count('id'))['avg_value'] or 0
-    return JsonResponse({'average_order_value': round(avg_value, 2)})
+    def get(self, request):
+        date_str = request.GET.get('date')
+        if date_str:
+            date_obj = parse_date(date_str)
+            if not date_obj:
+                return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=400)
+        else:
+            # Default → today
+            from datetime import date
+            date_obj = date.today()
 
+        total_worker_expense = Expense.objects.filter(
+            category='wage',
+            timestamp__date=date_obj
+        ).aggregate(total=Sum('amount'))['total'] or 0
 
-# 5️⃣ Order type distribution (Delivery vs Dine In)
-def order_type_distribution(request):
-    dist = (
-        Order.objects
-        .values('order_type')
-        .annotate(count=Count('id'))
-    )
-    return JsonResponse({'order_type_distribution': list(dist)})
-
-
-# 6️⃣ Top revenue-generating dishes
-def top_revenue_dishes(request):
-    top_revenue = (
-        OrderItem.objects
-        .values('dish__name')
-        .annotate(total_revenue=Sum('price'))
-        .order_by('-total_revenue')[:5]
-    )
-    return JsonResponse({'top_revenue_dishes': list(top_revenue)})
+        return Response({
+            'date': str(date_obj),
+            'total_worker_expense': float(total_worker_expense)
+        })
