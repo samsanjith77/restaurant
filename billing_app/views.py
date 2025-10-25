@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from datetime import date
 from rest_framework.views import APIView
+from datetime import datetime, timedelta
 class DishListView(View):
     def get(self, request):
         dishes = Dish.objects.all()
@@ -607,3 +608,47 @@ class WorkerExpenseByDateView(APIView):
             'date': str(date_obj),
             'total_worker_expense': float(total_worker_expense)
         })
+# 📈 1️⃣ Business Growth Insight — Daily Revenue Trend
+class DailyRevenueTrendView(APIView):
+    """
+    Returns last 7 days (or ?days=N) income trend for charts.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        days = int(request.GET.get("days", 7))
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=days - 1)
+
+        data = (
+            Order.objects.filter(created_at__date__range=[start_date, end_date])
+            .values("created_at__date")
+            .annotate(daily_income=Sum("total_amount"))
+            .order_by("created_at__date")
+        )
+
+        labels = [str(item["created_at__date"]) for item in data]
+        income = [item["daily_income"] for item in data]
+
+        return Response({
+            "labels": labels,
+            "daily_income": income
+        })
+
+
+# 🍽️ 2️⃣ Business Insight — Top Selling Dishes
+class TopSellingDishesView(APIView):
+    """
+    Returns top 5 best-selling dishes by total revenue.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        top_dishes = (
+            OrderItem.objects
+            .values(dish_name=F("dish__name"))
+            .annotate(total_sold=Sum(F("quantity")), total_revenue=Sum(F("price") * F("quantity")))
+            .order_by("-total_revenue")[:5]
+        )
+
+        return Response({"top_dishes": top_dishes})

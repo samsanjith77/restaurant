@@ -19,4 +19,6 @@ urlpatterns = [
 
     path('analytics/summary/', AnalyticsSummaryView.as_view(), name='analytics_summary'),
     path('analytics/worker-expense/', WorkerExpenseByDateView.as_view(), name='worker_expense_by_date'),
+    path('analytics/daily-revenue-trend/', DailyRevenueTrendView.as_view(), name='daily-revenue-trend'),
+    path('analytics/top-selling-dishes/', TopSellingDishesView.as_view(), name='top-selling-dishes'),
 ]
