@@ -4,6 +4,7 @@ from PIL import ImageWin  # install pillow if not yet: pip install pillow
 
 def print_text_direct():
     printer_name = win32print.GetDefaultPrinter()
+    print(printer_name)
     hprinter = win32print.OpenPrinter(printer_name)
     printer_info = win32print.GetPrinter(hprinter, 2)
     pdc = win32ui.CreateDC()
