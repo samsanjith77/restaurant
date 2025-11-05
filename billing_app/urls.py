@@ -7,6 +7,7 @@ urlpatterns = [
     path('orders/create/', CreateOrderView.as_view(), name='order-create'),
     path('orders/history/', OrderHistoryView.as_view(), name='last-orders'),
     path('dish_sales/', dish_sales_in_period, name='dish_sales_in_period'),
+
     # New Dish Management URLs
     path('dishes/create/', CreateDishView.as_view(), name='dish-create'),
     path('dishes/<int:dish_id>/update-image/', UpdateDishImageView.as_view(), name='dish-update-image'),

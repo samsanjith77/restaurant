@@ -3,9 +3,9 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views import View
 from django.utils.decorators import method_decorator
 from django.forms.models import model_to_dict
+from django.db.models import F, Sum, DecimalField,Count
 from .models import *
 import json
-from django.db.models import Sum, Count, F
 from django.utils.dateparse import parse_datetime,parse_date
 from .print_utils import print_order_bill 
 from django.utils import timezone
@@ -17,20 +17,49 @@ from rest_framework.permissions import IsAuthenticated
 from datetime import date
 from rest_framework.views import APIView
 from datetime import datetime, timedelta
+from decimal import Decimal
 class DishListView(View):
     def get(self, request):
-        dishes = Dish.objects.all()
-        data = []
+        try:
+            # Optional filtering by meal_type
+            meal_type = request.GET.get('meal_type', None)
+            
+            if meal_type:
+                # Validate meal_type
+                valid_meal_types = [choice[0] for choice in Dish.MEAL_TYPE_CHOICES]
+                if meal_type not in valid_meal_types:
+                    return JsonResponse({
+                        "error": f"Invalid meal_type. Must be one of: {', '.join(valid_meal_types)}"
+                    }, status=400)
+                
+                dishes = Dish.objects.filter(meal_type=meal_type)
+            else:
+                dishes = Dish.objects.all()
+            
+            data = []
+            for dish in dishes:
+                data.append({
+                    'id': dish.id,
+                    'name': dish.name,
+                    'secondary_name': dish.secondary_name,
+                    'price': float(dish.price),
+                    'meal_type': dish.meal_type,
+                    'meal_type_display': dish.get_meal_type_display(),
+                    'image': request.build_absolute_uri(dish.image.url) if dish.image else None,
+                    'created_at': dish.created_at.isoformat() if hasattr(dish, 'created_at') else None,
+                })
+            
+            return JsonResponse(data, safe=False)
+        
+        except Exception as e:
+            return JsonResponse({
+                "error": str(e)
+            }, status=500)
 
-        for dish in dishes:
-            data.append({
-                'id': dish.id,
-                'name': dish.name,
-                'price': float(dish.price),
-                'image': request.build_absolute_uri(dish.image.url) if dish.image else None
-            })
 
-        return JsonResponse(data, safe=False)
+# ==========================================
+# GET SINGLE DISH BY ID (WITH MEAL TYPE)
+# ==========================================
 
 class DishDetailView(View):
     def get(self, request, dish_id):
@@ -39,13 +68,92 @@ class DishDetailView(View):
             data = {
                 "id": dish.id,
                 "name": dish.name,
+                "secondary_name": dish.secondary_name,
                 "price": float(dish.price),
-                # Convert image field to URL if exists
-                "image": request.build_absolute_uri(dish.image.url) if dish.image else None
+                "meal_type": dish.meal_type,
+                "meal_type_display": dish.get_meal_type_display(),
+                "image": request.build_absolute_uri(dish.image.url) if dish.image else None,
+                "created_at": dish.created_at.isoformat() if hasattr(dish, 'created_at') else None,
+                "updated_at": dish.updated_at.isoformat() if hasattr(dish, 'updated_at') else None,
             }
             return JsonResponse(data)
+        
         except Dish.DoesNotExist:
-            return JsonResponse({"error": "Dish not found"}, status=404)
+            return JsonResponse({
+                "error": "Dish not found"
+            }, status=404)
+        
+        except Exception as e:
+            return JsonResponse({
+                "error": str(e)
+            }, status=500)
+
+
+# ==========================================
+# CREATE DISH WITH MEAL TYPE
+# ==========================================
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CreateDishView(View):
+    def post(self, request):
+        try:
+            name = request.POST.get('name', '').strip()
+            secondary_name = request.POST.get('secondary_name', '').strip()
+            price = request.POST.get('price', '').strip()
+            meal_type = request.POST.get('meal_type', 'afternoon').strip()
+            image = request.FILES.get('image')
+            
+            # Validation - required fields
+            if not name:
+                return JsonResponse({"error": "Dish name is required"}, status=400)
+            
+            if not price:
+                return JsonResponse({"error": "Price is required"}, status=400)
+            
+            # Validate price
+            try:
+                price_float = float(price)
+                if price_float < 0:
+                    raise ValueError("Price cannot be negative")
+            except ValueError:
+                return JsonResponse({
+                    "error": "Price must be a valid positive number"
+                }, status=400)
+            
+            # Validate meal_type
+            valid_meal_types = [choice[0] for choice in Dish.MEAL_TYPE_CHOICES]
+            if meal_type not in valid_meal_types:
+                return JsonResponse({
+                    "error": f"Invalid meal_type. Must be one of: {', '.join(valid_meal_types)}"
+                }, status=400)
+            
+            # Create dish
+            dish = Dish.objects.create(
+                name=name,
+                secondary_name=secondary_name if secondary_name else None,
+                price=price_float,
+                meal_type=meal_type,
+                image=image
+            )
+            
+            return JsonResponse({
+                "message": "Dish created successfully!",
+                "dish": {
+                    "id": dish.id,
+                    "name": dish.name,
+                    "secondary_name": dish.secondary_name or "",
+                    "price": float(dish.price),
+                    "meal_type": dish.meal_type,
+                    "meal_type_display": dish.get_meal_type_display(),
+                    "image": request.build_absolute_uri(dish.image.url) if dish.image else None
+                }
+            }, status=201)
+        
+        except Exception as e:
+            print(f"❌ Dish creation error: {str(e)}")
+            return JsonResponse({"error": str(e)}, status=500)
+
+
 # ✅ CREATE Order (with order_type)
 @method_decorator(csrf_exempt, name='dispatch')
 class CreateOrderView(View):
@@ -55,18 +163,15 @@ class CreateOrderView(View):
             items_data = data.get('items', [])
             frontend_total = float(data.get('total_amount', 0))
             order_type = data.get('order_type', 'dine_in')
-
             order = Order.objects.create(total_amount=0, order_type=order_type)
             backend_total = 0
 
             for item in items_data:
                 dish_id = item.get('dish_id')
                 quantity = int(item.get('quantity', 1))
-
                 dish = Dish.objects.get(id=dish_id)
                 price = dish.price * quantity
-                backend_total += price
-
+                backend_total += float(price)
                 OrderItem.objects.create(
                     order=order,
                     dish=dish,
@@ -83,27 +188,26 @@ class CreateOrderView(View):
             order.total_amount = backend_total
             order.save()
 
-            # ✅ Print the order bill
-            try:
-                print_order_bill(order)
-            except Exception as e:
-                print("⚠️ Printing failed:", e)
+            # try:
+            #     print_order_bill(order)
+            # except Exception as e:
+            #     print("⚠️ Printing failed:", e)
 
             order_data = {
                 "id": order.id,
                 "order_type": order.get_order_type_display(),
                 "created_at": order.created_at,
-                "total_amount": order.total_amount,
+                "total_amount": float(order.total_amount),
                 "items": [
                     {
                         "dish_name": item.dish.name,
+                        "secondary_name": item.dish.secondary_name,  # Include secondary name in items
                         "quantity": item.quantity,
                         "price": float(item.price)
                     }
                     for item in order.items.all()
                 ]
             }
-
             return JsonResponse({
                 "message": "Order created successfully & bill printed!",
                 "order": order_data
@@ -113,6 +217,7 @@ class CreateOrderView(View):
             return JsonResponse({"error": "Invalid dish ID"}, status=400)
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
+
         
 @method_decorator(csrf_exempt, name='dispatch')
 class OrderHistoryView(View):
@@ -233,41 +338,6 @@ def dish_sales_in_period(request):
 # billing/views.py (continued)
 
 
-# views.py - Add this new view for creating dishes
-@method_decorator(csrf_exempt, name='dispatch')
-class CreateDishView(View):
-    def post(self, request):
-        try:
-            # For multipart/form-data, use request.POST and request.FILES
-            name = request.POST.get('name')
-            price = request.POST.get('price')
-            image = request.FILES.get('image')  # Get uploaded image file
-            
-            if not name or not price:
-                return JsonResponse({
-                    "error": "Name and price are required"
-                }, status=400)
-            
-            # Create new dish
-            dish = Dish.objects.create(
-                name=name,
-                price=price,
-                image=image  # This will be saved in media/dishes/
-            )
-            
-            return JsonResponse({
-                "message": "Dish created successfully!",
-                "dish": {
-                    "id": dish.id,
-                    "name": dish.name,
-                    "price": float(dish.price),
-                    "image": request.build_absolute_uri(dish.image.url) if dish.image else None
-                }
-            }, status=201)
-        
-        except Exception as e:
-            return JsonResponse({"error": str(e)}, status=500)
-        
 @method_decorator(csrf_exempt, name='dispatch')
 class UpdateDishImageView(View):
     def patch(self, request, dish_id):
@@ -637,6 +707,9 @@ class DailyRevenueTrendView(APIView):
 
 
 # 🍽️ 2️⃣ Business Insight — Top Selling Dishes
+# ==========================================
+# GET TOP SELLING DISHES (DEBUGGED)
+# ==========================================
 class TopSellingDishesView(APIView):
     """
     Returns top 5 best-selling dishes by total revenue.
@@ -644,11 +717,35 @@ class TopSellingDishesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        top_dishes = (
-            OrderItem.objects
-            .values(dish_name=F("dish__name"))
-            .annotate(total_sold=Sum(F("quantity")), total_revenue=Sum(F("price") * F("quantity")))
-            .order_by("-total_revenue")[:5]
-        )
+        try:
+            top_dishes = (
+                OrderItem.objects
+                .values('dish__name')
+                .annotate(
+                    total_quantity=Sum('quantity'),
+                    total_orders=Count('order', distinct=True),
+                    total_revenue=Sum('price', output_field=DecimalField(max_digits=10, decimal_places=2))
+                )
+                .order_by('-total_revenue')[:5]
+            )
 
-        return Response({"top_dishes": top_dishes})
+            result = []
+            for item in top_dishes:
+                result.append({
+                    'dish_name': item['dish__name'],
+                    'total_sold': item['total_quantity'],  # Use total_sold for frontend compatibility
+                    'total_quantity': item['total_quantity'],  # Also include this
+                    'total_revenue': float(item['total_revenue']) if item['total_revenue'] else 0
+                })
+
+            return Response({
+                "success": True,
+                "top_dishes": result,
+                "count": len(result)
+            })
+        
+        except Exception as e:
+            return Response({
+                "success": False,
+                "error": str(e)
+            }, status=500)
