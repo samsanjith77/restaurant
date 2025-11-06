@@ -188,10 +188,10 @@ class CreateOrderView(View):
             order.total_amount = backend_total
             order.save()
 
-            # try:
-            #     print_order_bill(order)
-            # except Exception as e:
-            #     print("⚠️ Printing failed:", e)
+            try:
+                print_order_bill(order)
+            except Exception as e:
+                print("⚠️ Printing failed:", e)
 
             order_data = {
                 "id": order.id,

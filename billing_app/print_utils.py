@@ -6,13 +6,14 @@ def print_order_bill(order):
     """
     Prints a formatted thermal bill for Appatha Restaurant.
     Optimized for WeP CN811-UEB (80mm paper width).
+    Supports Tamil secondary names.
     """
 
     now = datetime.now().strftime("%d-%m-%Y %I:%M %p")
 
     # 🧾 Prepare bill lines
     lines = []
-    lines.append("======================================")  # 38 chars wide
+    lines.append("======================================")
     lines.append("        APPATHA RESTAURANT 🍽️")
     lines.append("             Mannargudi")
     lines.append("======================================")
@@ -23,19 +24,18 @@ def print_order_bill(order):
     lines.append("Item               Qty      Price")
     lines.append("--------------------------------------")
 
-    # Fit items cleanly within 38 chars
+    # ✅ Use secondary name if exists, else primary name
     for item in order.items.all():
-        name = item.dish.name[:14].ljust(14)
+        display_name = item.dish.secondary_name if item.dish.secondary_name else item.dish.name
+        
+        name = display_name[:14].ljust(14)
         qty = str(item.quantity).rjust(5)
         price = f"{item.price:.2f}".rjust(9)
         lines.append(f"{name}{qty}{price}")
 
     lines.append("--------------------------------------")
-
-    # ✅ Keep TOTAL within 38-char width
     total_text = f"TOTAL : ₹{order.total_amount:.2f}"
     lines.append(total_text.rjust(38))
-
     lines.append("======================================")
     lines.append("   Thank you for dining with us!")
     lines.append("        Visit Again 🙏")
@@ -48,24 +48,25 @@ def print_order_bill(order):
     pdc.StartDoc("Appatha Restaurant Bill")
     pdc.StartPage()
 
-    # 🧱 Font setup
+    # 🧱 Tamil-compatible font setup (CRITICAL CHANGE)
+    # Use "Latha" for Tamil support (built-in Windows font)
+    # or "TAU_Elango_Amudham" if installed
     font = win32ui.CreateFont({
-        "name": "Consolas",   # Monospace font
-        "height": 28,         # Bigger and bolder text
+        "name": "Latha",  # ✅ Supports Tamil Unicode
+        "height": 28,
         "weight": 600,
     })
     pdc.SelectObject(font)
 
-    # 📄 Coordinates
-    x = 30         # small left margin
-    y = 50         # top margin
+    # 📄 Print coordinates
+    x = 30
+    y = 50
     line_height = 34
 
     for line in lines:
         pdc.TextOut(x, y, line)
         y += line_height
 
-    # ✅ Finish print
     pdc.EndPage()
     pdc.EndDoc()
     pdc.DeleteDC()
