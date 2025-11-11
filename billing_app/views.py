@@ -32,11 +32,10 @@ class DishListView(View):
                         "error": f"Invalid meal_type. Must be one of: {', '.join(valid_meal_types)}"
                     }, status=400)
                 
-                dishes = Dish.objects.filter(meal_type=meal_type)
+                dishes = Dish.objects.filter(meal_type=meal_type).order_by('id')
             else:
-                dishes = Dish.objects.all()
-            
-            data = []
+                dishes = Dish.objects.all().order_by('id')
+            data=[]
             for dish in dishes:
                 data.append({
                     'id': dish.id,
@@ -48,7 +47,7 @@ class DishListView(View):
                     'image': request.build_absolute_uri(dish.image.url) if dish.image else None,
                     'created_at': dish.created_at.isoformat() if hasattr(dish, 'created_at') else None,
                 })
-            
+            filter_list=[{'id':1,"meal":"unknown"}]
             return JsonResponse(data, safe=False)
         
         except Exception as e:
