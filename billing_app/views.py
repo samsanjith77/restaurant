@@ -712,35 +712,64 @@ class DailyRevenueTrendView(APIView):
 # ==========================================
 class TopSellingDishesView(APIView):
     """
-    Returns top 5 best-selling dishes by total revenue.
+    Returns all dishes sold within the specified date range, ordered by total revenue.
+    Filters out dishes with zero count.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         try:
-            top_dishes = (
-                OrderItem.objects
+            # Get date filters from query parameters
+            start_date = request.query_params.get('start_date')
+            end_date = request.query_params.get('end_date')
+            filter_type = request.query_params.get('filter', 'today')
+
+            # Build the base queryset
+            queryset = OrderItem.objects.all()
+
+            # Apply date filters
+            if filter_type == 'all':
+                # No date filtering - all time data
+                pass
+            elif filter_type == 'custom' and start_date and end_date:
+                # Custom date range
+                queryset = queryset.filter(
+                    order__created_at__date__gte=start_date,
+                    order__created_at__date__lte=end_date
+                )
+            else:
+                # Default to today
+                from django.utils import timezone
+                today = timezone.now().date()
+                queryset = queryset.filter(order__created_at__date=today)
+
+            # Aggregate dish data
+            dishes_data = (
+                queryset
                 .values('dish__name')
                 .annotate(
                     total_quantity=Sum('quantity'),
                     total_orders=Count('order', distinct=True),
                     total_revenue=Sum('price', output_field=DecimalField(max_digits=10, decimal_places=2))
                 )
-                .order_by('-total_revenue')[:5]
+                .filter(total_quantity__gt=0)  # Exclude dishes with zero count
+                .order_by('-total_revenue')  # Order by highest revenue first
             )
 
+            # Format result
             result = []
-            for item in top_dishes:
+            for item in dishes_data:
                 result.append({
                     'dish_name': item['dish__name'],
-                    'total_sold': item['total_quantity'],  # Use total_sold for frontend compatibility
-                    'total_quantity': item['total_quantity'],  # Also include this
+                    'total_sold': item['total_quantity'],
+                    'total_quantity': item['total_quantity'],
+                    'total_orders': item['total_orders'],
                     'total_revenue': float(item['total_revenue']) if item['total_revenue'] else 0
                 })
 
             return Response({
                 "success": True,
-                "top_dishes": result,
+                "dishes": result,
                 "count": len(result)
             })
         
