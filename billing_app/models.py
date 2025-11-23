@@ -1,80 +1,94 @@
 from django.db import models
+from django.contrib.auth.models import User
+# from datetime import datetime,timezone
+
 from django.utils import timezone
-
-# ==========================================
-# DISH MODEL - WITH MEAL TYPE SUPPORT
-# ==========================================
-
 class Dish(models.Model):
+    # Meal Time Choices (when to serve)
     MEAL_TYPE_CHOICES = [
         ('morning', 'Morning'),
         ('afternoon', 'Afternoon'),
         ('night', 'Night'),
     ]
     
-    name = models.CharField(max_length=100)
-    secondary_name = models.CharField(max_length=100, blank=True, null=True)
-    price = models.DecimalField(max_digits=8, decimal_places=2)
-    image = models.ImageField(upload_to='dishes/', blank=True, null=True)
+    # Dish Category/Type Choices (what kind of dish)
+    DISH_TYPE_CHOICES = [
+        ('meals', 'Meals'),
+        ('chinese', 'Chinese'),
+        ('indian', 'Indian'),
+        ('addons', 'Add-ons'),
+        ('beverages', 'Beverages'),
+        ('desserts', 'Desserts'),
+    ]
+    
+    name = models.CharField(max_length=200)
+    secondary_name = models.CharField(max_length=200, null=True, blank=True)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
     meal_type = models.CharField(
-        max_length=20,
-        choices=MEAL_TYPE_CHOICES,
+        max_length=20, 
+        choices=MEAL_TYPE_CHOICES, 
         default='afternoon'
     )
+    dish_type = models.CharField(
+        max_length=20,
+        choices=DISH_TYPE_CHOICES,
+        default='meals'
+    )
+    image = models.ImageField(upload_to='dishes/', null=True, blank=True)
+    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
+    
     class Meta:
-        ordering = ['-meal_type', 'name']
-        indexes = [
-            models.Index(fields=['meal_type', 'name']),
-        ]
-
+        verbose_name_plural = "Dishes"
+        ordering = ['dish_type', 'name']
+    
     def __str__(self):
-        return f"{self.name} ({self.get_meal_type_display()})"
+        return f"{self.name} ({self.get_dish_type_display()}) - {self.get_meal_type_display()}"
 
-    @property
-    def meal_type_display(self):
-        return self.get_meal_type_display()
-
-
-# ==========================================
-# ORDER MODEL - UNCHANGED
-# ==========================================
 
 class Order(models.Model):
     ORDER_TYPE_CHOICES = [
-        ('dine_in', 'Dine In'),
+        ('dine-in', 'Dine In'),
         ('delivery', 'Delivery'),
     ]
-
+    
+    PAYMENT_TYPE_CHOICES = [
+        ('cash', 'Cash'),
+        ('upi', 'UPI'),
+        ('card', 'Card'),
+    ]
+    
     order_type = models.CharField(
-        max_length=20,
-        choices=ORDER_TYPE_CHOICES,
-        default='dine_in'
+        max_length=20, 
+        choices=ORDER_TYPE_CHOICES, 
+        default='dine-in'
     )
+    payment_type = models.CharField(
+        max_length=20,
+        choices=PAYMENT_TYPE_CHOICES,
+        default='cash'
+    )
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    addons = models.JSONField(null=True, blank=True, default=list)
     created_at = models.DateTimeField(auto_now_add=True)
-    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-
+    updated_at = models.DateTimeField(auto_now=True)
+    
     class Meta:
         ordering = ['-created_at']
-
+    
     def __str__(self):
-        return f"Order #{self.id} - {self.get_order_type_display()}"
+        return f"Order #{self.id} - {self.get_order_type_display()} - ₹{self.total_amount}"
 
-
-# ==========================================
-# ORDER ITEM MODEL - UNCHANGED
-# ==========================================
 
 class OrderItem(models.Model):
-    order = models.ForeignKey(Order, related_name='items', on_delete=models.CASCADE)
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
     dish = models.ForeignKey(Dish, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField(default=1)
-    price = models.DecimalField(max_digits=8, decimal_places=2)
-
+    quantity = models.IntegerField(default=1)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    
     def __str__(self):
-        return f"{self.quantity} x {self.dish.name}"
+        return f"{self.dish.name} x {self.quantity}"
 
 
 # ==========================================

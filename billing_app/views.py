@@ -18,24 +18,42 @@ from datetime import date
 from rest_framework.views import APIView
 from datetime import datetime, timedelta
 from decimal import Decimal
+# ==========================================
+# GET ALL DISHES WITH FILTERING
+# ==========================================
 class DishListView(View):
     def get(self, request):
         try:
-            # Optional filtering by meal_type
+            # Get filter parameters
             meal_type = request.GET.get('meal_type', None)
+            dish_type = request.GET.get('dish_type', None)
             
+            # Start with all active dishes
+            dishes = Dish.objects.filter(is_active=True)
+            
+            # Filter by meal_type if provided
             if meal_type:
-                # Validate meal_type
                 valid_meal_types = [choice[0] for choice in Dish.MEAL_TYPE_CHOICES]
                 if meal_type not in valid_meal_types:
                     return JsonResponse({
                         "error": f"Invalid meal_type. Must be one of: {', '.join(valid_meal_types)}"
                     }, status=400)
-                
-                dishes = Dish.objects.filter(meal_type=meal_type).order_by('id')
-            else:
-                dishes = Dish.objects.all().order_by('id')
-            data=[]
+                dishes = dishes.filter(meal_type=meal_type)
+            
+            # Filter by dish_type if provided
+            if dish_type:
+                valid_dish_types = [choice[0] for choice in Dish.DISH_TYPE_CHOICES]
+                if dish_type not in valid_dish_types:
+                    return JsonResponse({
+                        "error": f"Invalid dish_type. Must be one of: {', '.join(valid_dish_types)}"
+                    }, status=400)
+                dishes = dishes.filter(dish_type=dish_type)
+            
+            # Order results
+            dishes = dishes.order_by('dish_type', 'name')
+            
+            # Build response data
+            data = []
             for dish in dishes:
                 data.append({
                     'id': dish.id,
@@ -44,10 +62,13 @@ class DishListView(View):
                     'price': float(dish.price),
                     'meal_type': dish.meal_type,
                     'meal_type_display': dish.get_meal_type_display(),
+                    'dish_type': dish.dish_type,
+                    'dish_type_display': dish.get_dish_type_display(),
                     'image': request.build_absolute_uri(dish.image.url) if dish.image else None,
-                    'created_at': dish.created_at.isoformat() if hasattr(dish, 'created_at') else None,
+                    'is_active': dish.is_active,
+                    'created_at': dish.created_at.isoformat(),
                 })
-            filter_list=[{'id':1,"meal":"unknown"}]
+            
             return JsonResponse(data, safe=False)
         
         except Exception as e:
@@ -57,9 +78,26 @@ class DishListView(View):
 
 
 # ==========================================
-# GET SINGLE DISH BY ID (WITH MEAL TYPE)
+# GET DISH TYPES (for filtering)
 # ==========================================
+class DishTypesView(View):
+    def get(self, request):
+        try:
+            dish_types = [
+                {
+                    'value': choice[0],
+                    'label': choice[1]
+                }
+                for choice in Dish.DISH_TYPE_CHOICES
+            ]
+            return JsonResponse(dish_types, safe=False)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
 
+
+# ==========================================
+# GET SINGLE DISH BY ID
+# ==========================================
 class DishDetailView(View):
     def get(self, request, dish_id):
         try:
@@ -71,9 +109,12 @@ class DishDetailView(View):
                 "price": float(dish.price),
                 "meal_type": dish.meal_type,
                 "meal_type_display": dish.get_meal_type_display(),
+                "dish_type": dish.dish_type,
+                "dish_type_display": dish.get_dish_type_display(),
                 "image": request.build_absolute_uri(dish.image.url) if dish.image else None,
-                "created_at": dish.created_at.isoformat() if hasattr(dish, 'created_at') else None,
-                "updated_at": dish.updated_at.isoformat() if hasattr(dish, 'updated_at') else None,
+                "is_active": dish.is_active,
+                "created_at": dish.created_at.isoformat(),
+                "updated_at": dish.updated_at.isoformat(),
             }
             return JsonResponse(data)
         
@@ -89,9 +130,8 @@ class DishDetailView(View):
 
 
 # ==========================================
-# CREATE DISH WITH MEAL TYPE
+# CREATE DISH
 # ==========================================
-
 @method_decorator(csrf_exempt, name='dispatch')
 class CreateDishView(View):
     def post(self, request):
@@ -100,6 +140,7 @@ class CreateDishView(View):
             secondary_name = request.POST.get('secondary_name', '').strip()
             price = request.POST.get('price', '').strip()
             meal_type = request.POST.get('meal_type', 'afternoon').strip()
+            dish_type = request.POST.get('dish_type', 'meals').strip()
             image = request.FILES.get('image')
             
             # Validation - required fields
@@ -126,12 +167,20 @@ class CreateDishView(View):
                     "error": f"Invalid meal_type. Must be one of: {', '.join(valid_meal_types)}"
                 }, status=400)
             
+            # Validate dish_type
+            valid_dish_types = [choice[0] for choice in Dish.DISH_TYPE_CHOICES]
+            if dish_type not in valid_dish_types:
+                return JsonResponse({
+                    "error": f"Invalid dish_type. Must be one of: {', '.join(valid_dish_types)}"
+                }, status=400)
+            
             # Create dish
             dish = Dish.objects.create(
                 name=name,
                 secondary_name=secondary_name if secondary_name else None,
                 price=price_float,
                 meal_type=meal_type,
+                dish_type=dish_type,
                 image=image
             )
             
@@ -144,6 +193,8 @@ class CreateDishView(View):
                     "price": float(dish.price),
                     "meal_type": dish.meal_type,
                     "meal_type_display": dish.get_meal_type_display(),
+                    "dish_type": dish.dish_type,
+                    "dish_type_display": dish.get_dish_type_display(),
                     "image": request.build_absolute_uri(dish.image.url) if dish.image else None
                 }
             }, status=201)
@@ -153,7 +204,109 @@ class CreateDishView(View):
             return JsonResponse({"error": str(e)}, status=500)
 
 
-# ✅ CREATE Order (with order_type)
+# ==========================================
+# DELETE DISH
+# ==========================================
+@method_decorator(csrf_exempt, name='dispatch')
+class DeleteDishView(View):
+    def delete(self, request, dish_id):
+        try:
+            dish = Dish.objects.get(id=dish_id)
+            dish.is_active = False  # Soft delete
+            dish.save()
+            
+            return JsonResponse({
+                "message": "Dish deleted successfully!"
+            })
+        
+        except Dish.DoesNotExist:
+            return JsonResponse({"error": "Dish not found"}, status=404)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+
+# ==========================================
+# UPDATE DISH PRICE
+# ==========================================
+@method_decorator(csrf_exempt, name='dispatch')
+class UpdateDishPriceView(View):
+    def patch(self, request, dish_id):
+        try:
+            dish = Dish.objects.get(id=dish_id)
+            data = json.loads(request.body)
+            new_price = data.get('price')
+            
+            if new_price is None:
+                return JsonResponse({
+                    "error": "price is required"
+                }, status=400)
+            
+            try:
+                new_price = float(new_price)
+                if new_price < 0:
+                    raise ValueError("Price cannot be negative")
+            except (ValueError, TypeError):
+                return JsonResponse({
+                    "error": "Invalid price format"
+                }, status=400)
+            
+            dish.price = new_price
+            dish.save()
+            
+            return JsonResponse({
+                "message": "Dish price updated successfully!",
+                "dish": {
+                    "id": dish.id,
+                    "name": dish.name,
+                    "price": float(dish.price),
+                    "dish_type": dish.dish_type,
+                    "image": request.build_absolute_uri(dish.image.url) if dish.image else None
+                }
+            })
+            
+        except Dish.DoesNotExist:
+            return JsonResponse({"error": "Dish not found"}, status=404)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+
+# ==========================================
+# UPDATE DISH IMAGE
+# ==========================================
+@method_decorator(csrf_exempt, name='dispatch')
+class UpdateDishImageView(View):
+    def patch(self, request, dish_id):
+        try:
+            dish = Dish.objects.get(id=dish_id)
+            image = request.FILES.get('image')
+            
+            if not image:
+                return JsonResponse({
+                    "error": "Image file is required"
+                }, status=400)
+            
+            dish.image = image
+            dish.save()
+            
+            return JsonResponse({
+                "message": "Dish image updated successfully!",
+                "dish": {
+                    "id": dish.id,
+                    "name": dish.name,
+                    "price": float(dish.price),
+                    "image": request.build_absolute_uri(dish.image.url) if dish.image else None
+                }
+            })
+        
+        except Dish.DoesNotExist:
+            return JsonResponse({"error": "Dish not found"}, status=404)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+
+# ==========================================
+# CREATE ORDER
+# ==========================================
 @method_decorator(csrf_exempt, name='dispatch')
 class CreateOrderView(View):
     def post(self, request):
@@ -161,62 +314,87 @@ class CreateOrderView(View):
             data = json.loads(request.body)
             items_data = data.get('items', [])
             frontend_total = float(data.get('total_amount', 0))
-            order_type = data.get('order_type', 'dine_in')
-            order = Order.objects.create(total_amount=0, order_type=order_type)
+            order_type = data.get('order_type', 'dine-in')
+            payment_type = data.get('payment_type', 'cash')
+            addons = data.get('addons', [])
+            
+            # Create order
+            order = Order.objects.create(
+                total_amount=0,
+                order_type=order_type,
+                payment_type=payment_type,
+                addons=addons
+            )
+            
             backend_total = 0
-
+            
+            # Create order items from dishes
             for item in items_data:
                 dish_id = item.get('dish_id')
                 quantity = int(item.get('quantity', 1))
                 dish = Dish.objects.get(id=dish_id)
                 price = dish.price * quantity
                 backend_total += float(price)
+                
                 OrderItem.objects.create(
                     order=order,
                     dish=dish,
                     quantity=quantity,
                     price=price
                 )
-
-            if frontend_total != float(backend_total):
+            
+            # Add addons to total
+            for addon in addons:
+                addon_total = float(addon.get('price', 0)) * int(addon.get('quantity', 0))
+                backend_total += addon_total
+            
+            # Verify total
+            if abs(frontend_total - backend_total) > 0.01:  # Allow small floating point difference
                 order.delete()
                 return JsonResponse({
                     "error": f"Total mismatch! Frontend sent {frontend_total}, backend calculated {backend_total}"
                 }, status=400)
-
+            
             order.total_amount = backend_total
             order.save()
-
+            
+            # Print bill (if you have printer setup)
             try:
-                print_order_bill(order)
+                # Uncomment if you have print_order_bill function
+                # print_order_bill(order)
+                pass
             except Exception as e:
                 print("⚠️ Printing failed:", e)
-
+            
+            # Build response
             order_data = {
                 "id": order.id,
                 "order_type": order.get_order_type_display(),
-                "created_at": order.created_at,
+                "payment_type": order.get_payment_type_display(),
+                "created_at": order.created_at.isoformat(),
                 "total_amount": float(order.total_amount),
                 "items": [
                     {
                         "dish_name": item.dish.name,
-                        "secondary_name": item.dish.secondary_name,  # Include secondary name in items
+                        "secondary_name": item.dish.secondary_name,
+                        "dish_type": item.dish.get_dish_type_display(),
                         "quantity": item.quantity,
                         "price": float(item.price)
                     }
                     for item in order.items.all()
-                ]
+                ],
+                "addons": addons
             }
+            
             return JsonResponse({
-                "message": "Order created successfully & bill printed!",
+                "message": "Order created successfully!",
                 "order": order_data
             }, status=201)
-
+        
         except Dish.DoesNotExist:
             return JsonResponse({"error": "Invalid dish ID"}, status=400)
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
-
         
 @method_decorator(csrf_exempt, name='dispatch')
 class OrderHistoryView(View):
@@ -655,28 +833,83 @@ class AnalyticsSummaryView(APIView):
         })
         
 class WorkerExpenseByDateView(APIView):
+    """
+    Returns worker expense (wage category) for a specific date or date range.
+    Supports filter types: 'today', 'all', 'custom' (with start_date and end_date).
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        date_str = request.GET.get('date')
-        if date_str:
-            date_obj = parse_date(date_str)
-            if not date_obj:
-                return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=400)
-        else:
-            # Default → today
-            from datetime import date
-            date_obj = date.today()
+        # Get filter parameters
+        filter_type = request.GET.get('filter', 'today')
+        start_date = request.GET.get('start_date')
+        end_date = request.GET.get('end_date')
+        
+        # Legacy support for single 'date' parameter
+        single_date = request.GET.get('date')
 
-        total_worker_expense = Expense.objects.filter(
-            category='wage',
-            timestamp__date=date_obj
-        ).aggregate(total=Sum('amount'))['total'] or 0
+        try:
+            # Build queryset based on filter type
+            queryset = Expense.objects.filter(category='wage')
 
-        return Response({
-            'date': str(date_obj),
-            'total_worker_expense': float(total_worker_expense)
-        })
+            if single_date:
+                # Legacy single date filter
+                date_obj = parse_date(single_date)
+                if not date_obj:
+                    return Response({
+                        'error': 'Invalid date format. Use YYYY-MM-DD.'
+                    }, status=400)
+                queryset = queryset.filter(timestamp__date=date_obj)
+                date_label = str(date_obj)
+                
+            elif filter_type == 'all':
+                # No date filtering - all time
+                date_label = 'All Time'
+                
+            elif filter_type == 'custom' and start_date and end_date:
+                # Custom date range
+                start_date_obj = parse_date(start_date)
+                end_date_obj = parse_date(end_date)
+                
+                if not start_date_obj or not end_date_obj:
+                    return Response({
+                        'error': 'Invalid date format. Use YYYY-MM-DD for both dates.'
+                    }, status=400)
+                
+                if start_date_obj > end_date_obj:
+                    return Response({
+                        'error': 'Start date must be before or equal to end date.'
+                    }, status=400)
+                
+                queryset = queryset.filter(
+                    timestamp__date__gte=start_date_obj,
+                    timestamp__date__lte=end_date_obj
+                )
+                date_label = f'{start_date_obj} to {end_date_obj}'
+                
+            else:
+                # Default to today
+                today = date.today()
+                queryset = queryset.filter(timestamp__date=today)
+                date_label = str(today)
+
+            # Calculate total worker expense
+            total_worker_expense = queryset.aggregate(
+                total=Sum('amount')
+            )['total'] or 0
+
+            return Response({
+                'success': True,
+                'date': date_label,
+                'filter_type': filter_type,
+                'total_worker_expense': float(total_worker_expense)
+            })
+
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
 # 📈 1️⃣ Business Growth Insight — Daily Revenue Trend
 class DailyRevenueTrendView(APIView):
     """

@@ -2,16 +2,18 @@ from django.urls import path
 
 from .views import *
 urlpatterns = [
+    # Dishes
     path('dishes/', DishListView.as_view(), name='dish-list'),
+    path('dishes/types/', DishTypesView.as_view(), name='dish-types'),
     path('dishes/<int:dish_id>/', DishDetailView.as_view(), name='dish-detail'),
-    path('orders/create/', CreateOrderView.as_view(), name='order-create'),
+    path('dishes/create/', CreateDishView.as_view(), name='create-dish'),
+    path('dishes/<int:dish_id>/delete/', DeleteDishView.as_view(), name='delete-dish'),
+    path('dishes/<int:dish_id>/update-price/', UpdateDishPriceView.as_view(), name='update-dish-price'),
+    path('dishes/<int:dish_id>/update-image/', UpdateDishImageView.as_view(), name='update-dish-image'),
+    
+    # Orders
+    path('orders/create/', CreateOrderView.as_view(), name='create-order'),
     path('orders/history/', OrderHistoryView.as_view(), name='last-orders'),
-    path('dish_sales/', dish_sales_in_period, name='dish_sales_in_period'),
-
-    # New Dish Management URLs
-    path('dishes/create/', CreateDishView.as_view(), name='dish-create'),
-    path('dishes/<int:dish_id>/update-image/', UpdateDishImageView.as_view(), name='dish-update-image'),
-    path('dishes/<int:dish_id>/update-price/', UpdateDishPriceView.as_view(), name='dish-update-price'),
     # expenditure
     path('persons/', PersonListView.as_view(), name='persons'),
     path('expenses/filter/', ExpenseFilterView.as_view(), name='expenses_filter'),
