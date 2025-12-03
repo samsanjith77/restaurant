@@ -50,7 +50,7 @@ class DishListView(View):
                 dishes = dishes.filter(dish_type=dish_type)
             
             # Order results
-            dishes = dishes.order_by('dish_type', 'name')
+            dishes = dishes.order_by('dish_type')
             
             # Build response data
             data = []
@@ -361,8 +361,8 @@ class CreateOrderView(View):
             # Print bill (if you have printer setup)
             try:
                 # Uncomment if you have print_order_bill function
-                # print_order_bill(order)
-                pass
+                print_order_bill(order)
+                
             except Exception as e:
                 print("⚠️ Printing failed:", e)
             
