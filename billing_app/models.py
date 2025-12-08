@@ -144,3 +144,35 @@ class Expense(models.Model):
     def __str__(self):
         person_name = self.person.name if self.person else "N/A"
         return f"{self.category} - {person_name} - ₹{self.amount}"
+
+
+class DishDisplayOrder(models.Model):
+    """
+    Table to store display order of dishes within each meal time
+    Order starts from 0 for each meal_type separately
+    """
+    dish = models.OneToOneField(
+        Dish, 
+        on_delete=models.CASCADE, 
+        related_name='display_order_info',
+        unique=True
+    )
+    meal_type = models.CharField(
+        max_length=20,
+        choices=Dish.MEAL_TYPE_CHOICES
+    )
+    order = models.IntegerField(default=0)  # Order within meal_type (starts from 0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['meal_type', 'order']
+        verbose_name = "Dish Display Order"
+        verbose_name_plural = "Dish Display Orders"
+        # REMOVE the unique constraint - it causes issues during updates
+        indexes = [
+            models.Index(fields=['meal_type', 'order']),
+        ]
+    
+    def __str__(self):
+        return f"{self.dish.name} - {self.meal_type} - Order: {self.order}"

@@ -18,15 +18,23 @@ from datetime import date
 from rest_framework.views import APIView
 from datetime import datetime, timedelta
 from decimal import Decimal
+from django.db import transaction
+from django.db.models import Max
 # ==========================================
 # GET ALL DISHES WITH FILTERING
 # ==========================================
+
 class DishListView(View):
     def get(self, request):
         try:
             # Get filter parameters
             meal_type = request.GET.get('meal_type', None)
             dish_type = request.GET.get('dish_type', None)
+            group_by_meal = request.GET.get('group_by_meal', 'false').lower() == 'true'
+            
+            # If group_by_meal=true, return grouped data for ordering page
+            if group_by_meal:
+                return self.get_grouped_by_meal_type(request)
             
             # Start with all active dishes
             dishes = Dish.objects.filter(is_active=True)
@@ -49,13 +57,18 @@ class DishListView(View):
                     }, status=400)
                 dishes = dishes.filter(dish_type=dish_type)
             
-            # Order results
-            dishes = dishes.order_by('dish_type')
+            # Order results based on whether meal_type is provided
+            if meal_type:
+                # If meal_type is specified, order by the ordering table
+                dishes = dishes.select_related('display_order_info').order_by('display_order_info__order')
+            else:
+                # If no meal_type, show without custom ordering (default ordering)
+                dishes = dishes.order_by('dish_type', 'name')
             
             # Build response data
             data = []
             for dish in dishes:
-                data.append({
+                dish_data = {
                     'id': dish.id,
                     'name': dish.name,
                     'secondary_name': dish.secondary_name,
@@ -67,7 +80,16 @@ class DishListView(View):
                     'image': request.build_absolute_uri(dish.image.url) if dish.image else None,
                     'is_active': dish.is_active,
                     'created_at': dish.created_at.isoformat(),
-                })
+                }
+                
+                # Add order field only when meal_type is specified
+                if meal_type:
+                    try:
+                        dish_data['order'] = dish.display_order_info.order
+                    except DishDisplayOrder.DoesNotExist:
+                        dish_data['order'] = None
+                
+                data.append(dish_data)
             
             return JsonResponse(data, safe=False)
         
@@ -75,6 +97,167 @@ class DishListView(View):
             return JsonResponse({
                 "error": str(e)
             }, status=500)
+    
+    def get_grouped_by_meal_type(self, request):
+        """
+        Get all dishes grouped by meal_type for the ordering page UI
+        Called when ?group_by_meal=true
+        """
+        try:
+            meal_types_data = []
+            
+            for meal_code, meal_name in Dish.MEAL_TYPE_CHOICES:
+                # Get dishes for this meal_type ordered by order field
+                dishes = Dish.objects.filter(
+                    meal_type=meal_code,
+                    is_active=True
+                ).select_related('display_order_info').order_by('display_order_info__order')
+                
+                dishes_data = []
+                for dish in dishes:
+                    try:
+                        order = dish.display_order_info.order
+                    except DishDisplayOrder.DoesNotExist:
+                        order = 0
+                    
+                    dishes_data.append({
+                        'id': dish.id,
+                        'name': dish.name,
+                        'secondary_name': dish.secondary_name,
+                        'price': float(dish.price),
+                        'dish_type': dish.dish_type,
+                        'dish_type_display': dish.get_dish_type_display(),
+                        'order': order,
+                        'image': request.build_absolute_uri(dish.image.url) if dish.image else None
+                    })
+                
+                meal_types_data.append({
+                    'meal_type': meal_code,
+                    'meal_type_display': meal_name,
+                    'dishes': dishes_data,
+                    'total_dishes': len(dishes_data)
+                })
+            
+            return JsonResponse(meal_types_data, safe=False)
+        
+        except Exception as e:
+            return JsonResponse({
+                "error": str(e)
+            }, status=500)
+
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class DishReorderView(View):
+    def put(self, request):
+        try:
+            data = json.loads(request.body)
+            meal_type = data.get('meal_type')
+            dishes_order = data.get('dishes', [])
+            
+            # Validate meal_type
+            valid_meal_types = [choice[0] for choice in Dish.MEAL_TYPE_CHOICES]
+            if not meal_type or meal_type not in valid_meal_types:
+                return JsonResponse({
+                    "error": f"Invalid meal_type. Must be one of: {', '.join(valid_meal_types)}"
+                }, status=400)
+            
+            # Validate dishes array
+            if not dishes_order or not isinstance(dishes_order, list):
+                return JsonResponse({
+                    "error": "dishes array is required"
+                }, status=400)
+            
+            # Validate each dish item
+            for item in dishes_order:
+                if 'dish_id' not in item or 'order' not in item:
+                    return JsonResponse({
+                        "error": "Each dish must have 'dish_id' and 'order' keys"
+                    }, status=400)
+            
+            # Update orders in transaction
+            with transaction.atomic():
+                dish_ids = [item['dish_id'] for item in dishes_order]
+                
+                # Verify all dishes exist and belong to the meal_type
+                dishes_in_db = Dish.objects.filter(
+                    id__in=dish_ids,
+                    meal_type=meal_type
+                ).count()
+                
+                if dishes_in_db != len(dish_ids):
+                    return JsonResponse({
+                        "error": "Some dishes not found or don't belong to this meal_type"
+                    }, status=400)
+                
+                # STEP 1: Set all orders to negative values temporarily to avoid conflicts
+                for item in dishes_order:
+                    DishDisplayOrder.objects.filter(
+                        dish_id=item['dish_id']
+                    ).update(order=-item['order'] - 1000)
+                
+                # STEP 2: Now set the actual order values
+                for item in dishes_order:
+                    DishDisplayOrder.objects.filter(
+                        dish_id=item['dish_id']
+                    ).update(
+                        meal_type=meal_type,
+                        order=item['order']
+                    )
+            
+            return JsonResponse({
+                "success": True,
+                "message": f"Successfully reordered {len(dishes_order)} dishes for {meal_type}",
+                "meal_type": meal_type,
+                "updated_count": len(dishes_order)
+            })
+        
+        except json.JSONDecodeError:
+            return JsonResponse({
+                "error": "Invalid JSON payload"
+            }, status=400)
+        except Exception as e:
+            return JsonResponse({
+                "error": str(e)
+            }, status=500)
+
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class InitializeDishOrdersView(View):
+    """
+    Initialize display orders for existing dishes (run once)
+    """
+    def post(self, request):
+        try:
+            created_count = 0
+            
+            # For each meal_type, create orders starting from 0
+            for meal_code, meal_name in Dish.MEAL_TYPE_CHOICES:
+                dishes = Dish.objects.filter(meal_type=meal_code).order_by('id')
+                
+                for index, dish in enumerate(dishes):
+                    _, created = DishDisplayOrder.objects.get_or_create(
+                        dish=dish,
+                        defaults={
+                            'meal_type': meal_code,
+                            'order': index
+                        }
+                    )
+                    if created:
+                        created_count += 1
+            
+            return JsonResponse({
+                "success": True,
+                "message": f"Initialized {created_count} dish orders",
+                "details": "Order starts from 0 for each meal_type"
+            })
+        
+        except Exception as e:
+            return JsonResponse({
+                "error": str(e)
+            }, status=500)
+
 
 
 # ==========================================

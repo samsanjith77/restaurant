@@ -4,6 +4,8 @@ from .views import *
 urlpatterns = [
     # Dishes
     path('dishes/', DishListView.as_view(), name='dish-list'),
+    path('dishes/reorder/', DishReorderView.as_view(), name='dish-reorder'),
+    path('dishes/initialize-orders/', InitializeDishOrdersView.as_view(), name='initialize-orders'),
     path('dishes/types/', DishTypesView.as_view(), name='dish-types'),
     path('dishes/<int:dish_id>/', DishDetailView.as_view(), name='dish-detail'),
     path('dishes/create/', CreateDishView.as_view(), name='create-dish'),
