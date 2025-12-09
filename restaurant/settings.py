@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 import os
+import sys
 from corsheaders.defaults import default_headers
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -25,9 +26,9 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 SECRET_KEY = 'django-insecure--l-2w4#2he)@imx8z3@b@vv71!7dk-z@n)pmyvlu9dqyc&&yuw'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
 CORS_ALLOW_ALL_ORIGINS = True
 
 # Application definition
@@ -109,24 +110,29 @@ SIMPLE_JWT = {
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'restaurant',
-        'USER': 'sanjith',
-        'PASSWORD': 'sanjith123',
-        'HOST': 'localhost',
-        'PORT': '5432',
-    }
-}
 # DATABASES = {
 #     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         'NAME': BASE_DIR / 'db.sqlite3'
-
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': 'restaurant',
+#         'USER': 'sanjith',
+#         'PASSWORD': 'sanjith123',
+#         'HOST': 'localhost',
+#         'PORT': '5432',
 #     }
 # }
+if getattr(sys, 'frozen', False):
+    # If running as PyInstaller executable
+    DB_PATH = os.path.join(os.path.dirname(sys.executable), 'db.sqlite3')
+else:
+    # If running normally
+    DB_PATH = os.path.join(BASE_DIR, 'db.sqlite3')
 
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': DB_PATH,
+    }
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
@@ -163,7 +169,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
-
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
