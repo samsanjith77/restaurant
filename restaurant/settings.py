@@ -112,7 +112,7 @@ SIMPLE_JWT = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'restaurant',
+        'NAME': 'rest_db',
         'USER': 'sanjith',
         'PASSWORD': 'sanjith123',
         'HOST': 'localhost',
