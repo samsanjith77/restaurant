@@ -107,8 +107,6 @@ SIMPLE_JWT = {
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
 }
 
-# Database
-# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
     'default': {
@@ -120,16 +118,7 @@ DATABASES = {
         'PORT': '5432',
     }
 }
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': 'restaurant',
-#         'USER': 'sanjith',
-#         'PASSWORD': 'sanjith123',
-#         'HOST': 'localhost',
-#         'PORT': '5432',
-#     }
-# }
+
 # if getattr(sys, 'frozen', False):
 #     # If running as PyInstaller executable
 #     DB_PATH = os.path.join(os.path.dirname(sys.executable), 'db.sqlite3')
