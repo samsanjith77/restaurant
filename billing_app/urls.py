@@ -84,6 +84,9 @@ urlpatterns = [
     path('expenses/worker/add/', AddWorkerExpenseView.as_view(), name='add_worker_expense'),
     path('expenses/material/add/', AddMaterialExpenseView.as_view(), name='add_material_expense'),
 
+    path('workers/<int:worker_id>/delete/', WorkerDeleteView.as_view(), name='worker-delete'),
+    path('materials/<int:material_id>/delete/', MaterialDeleteView.as_view(), name='material-delete'),
+    path('expenses/<int:expense_id>/delete/', ExpenseDeleteView.as_view(), name='expense-delete'),
 
 
     # ==========================================
@@ -113,4 +116,7 @@ urlpatterns = [
 
     # Weekly summary report
     path('analytics/weekly-summary/', WeeklySummaryView.as_view(), name='analytics-weekly-summary'),
+
+    path('reports/shift-report/', ShiftReportView.as_view(), name='shift-report'),
+
 ]

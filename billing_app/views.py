@@ -27,6 +27,10 @@ from .models import Order, OrderItem, Dish, Expense, Worker, Material, ExpenseIt
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+import pytz
+import traceback
+from .models import Order, OrderItem, Expense, ExpenseItem, Dish, Worker, Material
+from .serializers import ShiftReportSerializer, DailyReportSerializer
 # ==========================================
 # DISH LIST VIEW - WITH EXTRAS ISOLATION
 # ==========================================
@@ -295,48 +299,40 @@ class DishListView(View):
 # GET DISHES FOR ORDERING (GROUPED BY MEAL TYPE AND CATEGORY)
 # ==========================================
 class GetDishesForOrderingView(View):
-    """
-    Returns dishes grouped by meal_type, then by category
-    Excludes 'extras' category
-    """
     def get(self, request):
         try:
             meal_types_data = []
-            
+
             for meal_code, meal_name in Dish.MEAL_TYPE_CHOICES:
-                # Skip 'all' meal type (used for extras only)
                 if meal_code == 'all':
                     continue
-                
-                # Get categories for this meal type (exclude extras)
+
                 categories = Dish.objects.filter(
                     meal_type=meal_code,
-                    is_active=True  # FIXED: Changed from is_available to is_active
+                    is_active=True
                 ).exclude(
                     category='extras'
                 ).values_list('category', flat=True).distinct().order_by('category')
-                
+
                 categories_data = []
                 total_dishes_count = 0
-                
+
                 for category in categories:
-                    # Get dishes for this category, ordered by display_order
                     dishes = Dish.objects.filter(
                         meal_type=meal_code,
                         category=category,
-                        is_active=True  # FIXED: Changed from is_available to is_active
+                        is_active=True
                     ).select_related('display_order_info').order_by(
                         'display_order_info__order', 'id'
                     )
-                    
+
                     dishes_list = []
                     for dish in dishes:
-                        # Get the current order or default to 0
                         try:
                             current_order = dish.display_order_info.order
                         except DishDisplayOrder.DoesNotExist:
                             current_order = 0
-                        
+
                         dishes_list.append({
                             'id': dish.id,
                             'name': dish.name,
@@ -347,7 +343,7 @@ class GetDishesForOrderingView(View):
                             'category_display': dish.get_category_display(),
                             'current_order': current_order
                         })
-                    
+
                     if dishes_list:
                         categories_data.append({
                             'category': category,
@@ -356,7 +352,7 @@ class GetDishesForOrderingView(View):
                             'total_dishes': len(dishes_list)
                         })
                         total_dishes_count += len(dishes_list)
-                
+
                 if categories_data:
                     meal_types_data.append({
                         'meal_type': meal_code,
@@ -364,9 +360,9 @@ class GetDishesForOrderingView(View):
                         'categories': categories_data,
                         'total_dishes': total_dishes_count
                     })
-            
+
             return JsonResponse(meal_types_data, safe=False)
-        
+
         except Exception as e:
             import traceback
             print("Error in GetDishesForOrderingView:")
@@ -377,10 +373,7 @@ class GetDishesForOrderingView(View):
 
 
 # ==========================================
-# DISH REORDER VIEW (BY MEAL TYPE AND CATEGORY)
-# ==========================================
-# ==========================================
-# DISH REORDER VIEW (BY MEAL TYPE AND CATEGORY)
+# DISH REORDER VIEW (FIXED)
 # ==========================================
 @method_decorator(csrf_exempt, name='dispatch')
 class DishReorderView(View):
@@ -390,60 +383,82 @@ class DishReorderView(View):
             meal_type = data.get('meal_type')
             category = data.get('category')
             dishes_order = data.get('dishes', [])
-            
+
+            print(f"📥 Received reorder request:")
+            print(f"   Meal Type: {meal_type} (type: {type(meal_type)})")
+            print(f"   Category: {category} (type: {type(category)})")
+            print(f"   Dishes: {len(dishes_order)} items")
+
             # Validate meal_type
             valid_meal_types = [choice[0] for choice in Dish.MEAL_TYPE_CHOICES if choice[0] != 'all']
-            if not meal_type or meal_type not in valid_meal_types:
+            if not meal_type:
                 return JsonResponse({
-                    "error": f"Invalid meal_type. Must be one of: {', '.join(valid_meal_types)}"
+                    "error": "meal_type is required"
                 }, status=400)
-            
+
+            if meal_type not in valid_meal_types:
+                return JsonResponse({
+                    "error": f"Invalid meal_type '{meal_type}'. Must be one of: {', '.join(valid_meal_types)}"
+                }, status=400)
+
             # Validate category
             valid_categories = [choice[0] for choice in Dish.CATEGORY_CHOICES if choice[0] != 'extras']
-            if not category or category not in valid_categories:
+            if not category:
                 return JsonResponse({
-                    "error": f"Invalid category. Must be one of: {', '.join(valid_categories)}"
+                    "error": "category is required"
                 }, status=400)
-            
+
+            if category not in valid_categories:
+                return JsonResponse({
+                    "error": f"Invalid category '{category}'. Must be one of: {', '.join(valid_categories)}"
+                }, status=400)
+
             # Validate dishes array
             if not dishes_order or not isinstance(dishes_order, list):
                 return JsonResponse({
-                    "error": "dishes array is required"
+                    "error": "dishes array is required and must be a list"
                 }, status=400)
-            
+
             # Validate each dish item
             for item in dishes_order:
                 if 'dish_id' not in item or 'order' not in item:
                     return JsonResponse({
                         "error": "Each dish must have 'dish_id' and 'order' keys"
                     }, status=400)
-            
+
             # Update orders in transaction
             with transaction.atomic():
                 dish_ids = [item['dish_id'] for item in dishes_order]
-                
-                # Verify all dishes exist, belong to the meal_type and category
+
+                # Verify all dishes exist and belong to the meal_type and category
                 dishes_in_db = Dish.objects.filter(
                     id__in=dish_ids,
                     meal_type=meal_type,
                     category=category,
                     is_active=True
-                ).exclude(category='extras').count()
-                
-                if dishes_in_db != len(dish_ids):
+                ).exclude(category='extras')
+
+                dishes_count = dishes_in_db.count()
+                print(f"✅ Found {dishes_count} dishes in database")
+
+                if dishes_count != len(dish_ids):
+                    missing_ids = set(dish_ids) - set(dishes_in_db.values_list('id', flat=True))
                     return JsonResponse({
-                        "error": "Some dishes not found or don't belong to this meal_type/category"
+                        "error": f"Some dishes not found or don't belong to this meal_type/category. Missing IDs: {list(missing_ids)}"
                     }, status=400)
-                
-                # STEP 1: Set all orders to negative values temporarily to avoid unique constraint conflicts
+
+                # STEP 1: Set all orders to negative values temporarily
+                print("🔄 Setting temporary negative orders...")
                 for item in dishes_order:
                     DishDisplayOrder.objects.filter(
                         dish_id=item['dish_id']
                     ).update(order=-item['order'] - 1000)
-                
-                # STEP 2: Now set the actual order values
+
+                # STEP 2: Set the actual order values
+                print("✅ Setting final orders...")
+                updated_count = 0
                 for item in dishes_order:
-                    DishDisplayOrder.objects.update_or_create(
+                    obj, created = DishDisplayOrder.objects.update_or_create(
                         dish_id=item['dish_id'],
                         defaults={
                             'meal_type': meal_type,
@@ -451,27 +466,30 @@ class DishReorderView(View):
                             'order': item['order']
                         }
                     )
-            
+                    updated_count += 1
+                    print(f"   Dish {item['dish_id']}: order = {item['order']} ({'created' if created else 'updated'})")
+
+            print(f"✅ Successfully reordered {updated_count} dishes")
+
             return JsonResponse({
                 "success": True,
-                "message": f"Successfully reordered {len(dishes_order)} dishes for {category} in {meal_type}",
+                "message": f"Successfully reordered {updated_count} dishes for {category} in {meal_type}",
                 "meal_type": meal_type,
                 "category": category,
-                "updated_count": len(dishes_order)
+                "updated_count": updated_count
             })
-        
+
         except json.JSONDecodeError:
             return JsonResponse({
                 "error": "Invalid JSON payload"
             }, status=400)
         except Exception as e:
             import traceback
-            print("Error in DishReorderView:")
+            print("❌ Error in DishReorderView:")
             print(traceback.format_exc())
             return JsonResponse({
                 "error": str(e)
             }, status=500)
-
 
 
 # ==========================================
@@ -479,33 +497,25 @@ class DishReorderView(View):
 # ==========================================
 @method_decorator(csrf_exempt, name='dispatch')
 class InitializeDishOrdersView(View):
-    """
-    Initialize display orders for existing dishes (run once)
-    EXCLUDES extras category
-    Groups by meal_type and category
-    """
     def post(self, request):
         try:
             created_count = 0
             updated_count = 0
-            
-            # For each meal_type
+
             for meal_code, meal_name in Dish.MEAL_TYPE_CHOICES:
-                if meal_code == 'all':  # Skip 'all' (for extras)
+                if meal_code == 'all':
                     continue
-                
-                # For each category (exclude extras)
+
                 for cat_code, cat_name in Dish.CATEGORY_CHOICES:
                     if cat_code == 'extras':
                         continue
-                    
-                    # Get dishes for this meal_type and category
+
                     dishes = Dish.objects.filter(
                         meal_type=meal_code,
                         category=cat_code,
-                        is_active=True  # FIXED: Changed from is_available to is_active
+                        is_active=True
                     ).order_by('id')
-                    
+
                     for index, dish in enumerate(dishes):
                         obj, created = DishDisplayOrder.objects.update_or_create(
                             dish=dish,
@@ -519,7 +529,7 @@ class InitializeDishOrdersView(View):
                             created_count += 1
                         else:
                             updated_count += 1
-            
+
             return JsonResponse({
                 "success": True,
                 "message": f"Initialized dish orders",
@@ -527,7 +537,7 @@ class InitializeDishOrdersView(View):
                 "updated": updated_count,
                 "details": "Orders grouped by meal_type and category (extras excluded)"
             })
-        
+
         except Exception as e:
             import traceback
             print("Error in InitializeDishOrdersView:")
@@ -545,9 +555,8 @@ class DishCategoriesView(View):
         try:
             meal_type = request.GET.get('meal_type', None)
             include_extras = request.GET.get('include_extras', 'false').lower() == 'true'
-            
+
             if meal_type:
-                # Return categories available for specific meal type
                 available_categories = Dish.get_available_categories_for_meal(meal_type)
                 categories = [
                     {
@@ -558,7 +567,6 @@ class DishCategoriesView(View):
                     if choice[0] in available_categories
                 ]
             else:
-                # Return all categories
                 categories = [
                     {
                         'value': choice[0],
@@ -566,17 +574,17 @@ class DishCategoriesView(View):
                     }
                     for choice in Dish.CATEGORY_CHOICES
                 ]
-            
-            # EXCLUDE extras unless explicitly requested
+
             if not include_extras:
                 categories = [cat for cat in categories if cat['value'] != 'extras']
-            
+
             return JsonResponse(categories, safe=False)
         except Exception as e:
             import traceback
             print("Error in DishCategoriesView:")
             print(traceback.format_exc())
             return JsonResponse({"error": str(e)}, status=500)
+
 # ==========================================
 # GET SINGLE DISH BY ID
 # ==========================================
@@ -1629,6 +1637,88 @@ class AddMaterialExpenseView(View):
             print("Error in AddMaterialExpenseView:")
             print(traceback.format_exc())
             return JsonResponse({"error": str(e)}, status=400)
+        
+# delete api for the expense and material , worker
+
+@method_decorator(csrf_exempt, name='dispatch')
+class WorkerDeleteView(View):
+    def delete(self, request, worker_id):
+        try:
+            worker = Worker.objects.get(id=worker_id, is_active=True)
+            
+            # Soft delete - set is_active to False
+            worker.is_active = False
+            worker.save()
+            
+            return JsonResponse({
+                'success': True,
+                'message': f'Worker {worker.name} deleted successfully'
+            })
+        
+        except Worker.DoesNotExist:
+            return JsonResponse({"error": "Worker not found"}, status=404)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+
+@method_decorator(csrf_exempt, name='dispatch')
+class MaterialDeleteView(View):
+    def delete(self, request, material_id):
+        try:
+            material = Material.objects.get(id=material_id, is_active=True)
+            
+            # Check if material is used in any expense items
+            expense_items_count = ExpenseItem.objects.filter(material=material).count()
+            
+            if expense_items_count > 0:
+                # Soft delete if material is referenced
+                material.is_active = False
+                material.save()
+                return JsonResponse({
+                    'success': True,
+                    'message': f'Material {material.name} marked as inactive (used in {expense_items_count} expense items)'
+                })
+            else:
+                # Hard delete if not referenced
+                material_name = material.name
+                material.delete()
+                return JsonResponse({
+                    'success': True,
+                    'message': f'Material {material_name} deleted successfully'
+                })
+        
+        except Material.DoesNotExist:
+            return JsonResponse({"error": "Material not found"}, status=404)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+
+@method_decorator(csrf_exempt, name='dispatch')
+class ExpenseDeleteView(View):
+    def delete(self, request, expense_id):
+        try:
+            expense = Expense.objects.get(id=expense_id)
+            
+            with transaction.atomic():
+                # Delete related expense items first (if material expense)
+                if expense.expense_type == 'material':
+                    expense.items.all().delete()
+                
+                # Delete the expense
+                expense_type = expense.get_expense_type_display()
+                expense_desc = expense.description
+                expense.delete()
+                
+                return JsonResponse({
+                    'success': True,
+                    'message': f'{expense_type} expense "{expense_desc}" deleted successfully'
+                })
+        
+        except Expense.DoesNotExist:
+            return JsonResponse({"error": "Expense not found"}, status=404)
+        except Exception as e:
+            import traceback
+            print("Error in ExpenseDeleteView:")
+            print(traceback.format_exc())
+            return JsonResponse({"error": str(e)}, status=400)
 
 
 # ==========================================
@@ -1637,7 +1727,8 @@ class AddMaterialExpenseView(View):
 class AnalyticsDashboardView(APIView):
     """
     Complete analytics dashboard with shift-wise analysis
-    Requires authentication
+    Afternoon: 10:00 AM - 4:00 PM
+    Night: 4:00 PM - 4:00 AM (next day)
     """
     permission_classes = [IsAuthenticated]
     
@@ -1646,58 +1737,75 @@ class AnalyticsDashboardView(APIView):
             # Get date parameters
             date_str = request.GET.get('date')
             filter_type = request.GET.get('filter', 'today')
+            tz_str = request.GET.get('timezone', 'Asia/Kolkata')
             
+            try:
+                tz = pytz.timezone(tz_str)
+            except:
+                tz = pytz.timezone('Asia/Kolkata')
+            
+            # Determine target date
             if filter_type == 'today' or not date_str:
-                target_date = datetime.now().date()
+                target_date = timezone.now().astimezone(tz).date()
             elif filter_type == 'yesterday':
-                target_date = (datetime.now() - timedelta(days=1)).date()
+                target_date = (timezone.now().astimezone(tz) - timedelta(days=1)).date()
             else:
                 target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
             
             # Shift times
-            morning_start = datetime.combine(target_date, time(7, 0))
-            morning_end = datetime.combine(target_date, time(16, 0))
-            night_start = datetime.combine(target_date, time(16, 0))
-            night_end = datetime.combine(target_date + timedelta(days=1), time(2, 0))
+            afternoon_start = tz.localize(datetime.combine(target_date, time(10, 0)))
+            afternoon_end = tz.localize(datetime.combine(target_date, time(16, 0)))
+            night_start = tz.localize(datetime.combine(target_date, time(16, 0)))
+            night_end = tz.localize(datetime.combine(target_date + timedelta(days=1), time(4, 0)))
             
-            # Previous day closing for opening balance
+            # Convert to UTC for queries
+            afternoon_start_utc = afternoon_start.astimezone(pytz.UTC)
+            afternoon_end_utc = afternoon_end.astimezone(pytz.UTC)
+            night_start_utc = night_start.astimezone(pytz.UTC)
+            night_end_utc = night_end.astimezone(pytz.UTC)
+            
+            # Previous night closing for opening balance
             previous_date = target_date - timedelta(days=1)
-            previous_night_start = datetime.combine(previous_date, time(16, 0))
-            previous_night_end = datetime.combine(target_date, time(2, 0))
+            previous_night_start = tz.localize(datetime.combine(previous_date, time(16, 0)))
+            previous_night_end = tz.localize(datetime.combine(target_date, time(4, 0)))
+            previous_night_start_utc = previous_night_start.astimezone(pytz.UTC)
+            previous_night_end_utc = previous_night_end.astimezone(pytz.UTC)
             
             previous_revenue = Order.objects.filter(
-                created_at__gte=previous_night_start,
-                created_at__lt=previous_night_end
+                created_at__gte=previous_night_start_utc,
+                created_at__lt=previous_night_end_utc
             ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
             
             previous_expenses = Expense.objects.filter(
-                timestamp__gte=previous_night_start,
-                timestamp__lt=previous_night_end
+                timestamp__gte=previous_night_start_utc,
+                timestamp__lt=previous_night_end_utc
             ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
             
             opening_balance = previous_revenue - previous_expenses
             
-            # MORNING SHIFT
-            morning_orders = Order.objects.filter(
-                created_at__gte=morning_start,
-                created_at__lt=morning_end
+            # AFTERNOON SHIFT
+            afternoon_orders = Order.objects.filter(
+                created_at__gte=afternoon_start_utc,
+                created_at__lt=afternoon_end_utc
             )
             
-            morning_revenue = morning_orders.aggregate(
+            afternoon_revenue = afternoon_orders.aggregate(
                 total=Coalesce(Sum('total_amount'), Decimal('0.00'))
             )['total']
-            morning_order_count = morning_orders.count()
-            morning_expenses = Expense.objects.filter(
-                timestamp__gte=morning_start,
-                timestamp__lt=morning_end
-            ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
-            morning_profit = morning_revenue - morning_expenses
-            morning_closing = opening_balance + morning_profit
+            afternoon_order_count = afternoon_orders.count()
             
-            # Morning top dishes
-            morning_top_dishes = OrderItem.objects.filter(
-                order__created_at__gte=morning_start,
-                order__created_at__lt=morning_end
+            afternoon_expenses = Expense.objects.filter(
+                timestamp__gte=afternoon_start_utc,
+                timestamp__lt=afternoon_end_utc
+            ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
+            
+            afternoon_profit = afternoon_revenue - afternoon_expenses
+            afternoon_closing = opening_balance + afternoon_profit
+            
+            # Afternoon top dishes
+            afternoon_top_dishes = OrderItem.objects.filter(
+                order__created_at__gte=afternoon_start_utc,
+                order__created_at__lt=afternoon_end_utc
             ).values(
                 'dish__id',
                 'dish__name',
@@ -1713,26 +1821,28 @@ class AnalyticsDashboardView(APIView):
             
             # NIGHT SHIFT
             night_orders = Order.objects.filter(
-                created_at__gte=night_start,
-                created_at__lt=night_end
+                created_at__gte=night_start_utc,
+                created_at__lt=night_end_utc
             )
             
             night_revenue = night_orders.aggregate(
                 total=Coalesce(Sum('total_amount'), Decimal('0.00'))
             )['total']
             night_order_count = night_orders.count()
+            
             night_expenses = Expense.objects.filter(
-                timestamp__gte=night_start,
-                timestamp__lt=night_end
+                timestamp__gte=night_start_utc,
+                timestamp__lt=night_end_utc
             ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
+            
             night_profit = night_revenue - night_expenses
-            night_opening = morning_closing
+            night_opening = afternoon_closing
             night_closing = night_opening + night_profit
             
             # Night top dishes
             night_top_dishes = OrderItem.objects.filter(
-                order__created_at__gte=night_start,
-                order__created_at__lt=night_end
+                order__created_at__gte=night_start_utc,
+                order__created_at__lt=night_end_utc
             ).values(
                 'dish__id',
                 'dish__name',
@@ -1747,15 +1857,15 @@ class AnalyticsDashboardView(APIView):
             ).order_by('-total_quantity')[:10]
             
             # OVERALL
-            total_revenue = morning_revenue + night_revenue
-            total_expenses = morning_expenses + night_expenses
+            total_revenue = afternoon_revenue + night_revenue
+            total_expenses = afternoon_expenses + night_expenses
             total_profit = total_revenue - total_expenses
-            total_orders = morning_order_count + night_order_count
+            total_orders = afternoon_order_count + night_order_count
             
             # Overall top dishes
             overall_top_dishes = OrderItem.objects.filter(
-                Q(order__created_at__gte=morning_start, order__created_at__lt=morning_end) |
-                Q(order__created_at__gte=night_start, order__created_at__lt=night_end)
+                Q(order__created_at__gte=afternoon_start_utc, order__created_at__lt=afternoon_end_utc) |
+                Q(order__created_at__gte=night_start_utc, order__created_at__lt=night_end_utc)
             ).values(
                 'dish__id',
                 'dish__name',
@@ -1770,18 +1880,18 @@ class AnalyticsDashboardView(APIView):
             ).order_by('-total_quantity')[:10]
             
             # Expense breakdown
-            morning_expense_breakdown = Expense.objects.filter(
-                timestamp__gte=morning_start,
-                timestamp__lt=morning_end
+            afternoon_expense_breakdown = Expense.objects.filter(
+                timestamp__gte=afternoon_start_utc,
+                timestamp__lt=afternoon_end_utc
             ).values('expense_type').annotate(total=Sum('total_amount'))
             
             night_expense_breakdown = Expense.objects.filter(
-                timestamp__gte=night_start,
-                timestamp__lt=night_end
+                timestamp__gte=night_start_utc,
+                timestamp__lt=night_end_utc
             ).values('expense_type').annotate(total=Sum('total_amount'))
             
             # Payment breakdown
-            morning_payment_breakdown = morning_orders.values('payment_type').annotate(
+            afternoon_payment_breakdown = afternoon_orders.values('payment_type').annotate(
                 count=Count('id'),
                 total=Sum('total_amount')
             )
@@ -1792,7 +1902,7 @@ class AnalyticsDashboardView(APIView):
             )
             
             # Order type breakdown
-            morning_order_type = morning_orders.values('order_type').annotate(
+            afternoon_order_type = afternoon_orders.values('order_type').annotate(
                 count=Count('id'),
                 total=Sum('total_amount')
             )
@@ -1803,7 +1913,7 @@ class AnalyticsDashboardView(APIView):
             )
             
             # Average order value
-            morning_avg_order = morning_revenue / morning_order_count if morning_order_count > 0 else Decimal('0.00')
+            afternoon_avg_order = afternoon_revenue / afternoon_order_count if afternoon_order_count > 0 else Decimal('0.00')
             night_avg_order = night_revenue / night_order_count if night_order_count > 0 else Decimal('0.00')
             
             return Response({
@@ -1811,16 +1921,17 @@ class AnalyticsDashboardView(APIView):
                 'filter_type': filter_type,
                 'opening_balance': str(opening_balance),
                 
-                'morning_shift': {
-                    'start_time': morning_start.strftime('%I:%M %p'),
-                    'end_time': morning_end.strftime('%I:%M %p'),
+                'afternoon_shift': {
+                    'name': 'Afternoon Shift',
+                    'start_time': afternoon_start.strftime('%I:%M %p'),
+                    'end_time': afternoon_end.strftime('%I:%M %p'),
                     'opening_balance': str(opening_balance),
-                    'revenue': str(morning_revenue),
-                    'expenses': str(morning_expenses),
-                    'profit': str(morning_profit),
-                    'closing_balance': str(morning_closing),
-                    'order_count': morning_order_count,
-                    'avg_order_value': str(morning_avg_order),
+                    'revenue': str(afternoon_revenue),
+                    'expenses': str(afternoon_expenses),
+                    'profit': str(afternoon_profit),
+                    'closing_balance': str(afternoon_closing),
+                    'order_count': afternoon_order_count,
+                    'avg_order_value': str(afternoon_avg_order),
                     'top_dishes': [
                         {
                             'dish_id': dish['dish__id'],
@@ -1833,17 +1944,32 @@ class AnalyticsDashboardView(APIView):
                             'total_revenue': str(dish['total_revenue']),
                             'order_count': dish['order_count']
                         }
-                        for dish in morning_top_dishes
+                        for dish in afternoon_top_dishes
                     ],
                     'expense_breakdown': {
                         item['expense_type']: str(item['total'])
-                        for item in morning_expense_breakdown
+                        for item in afternoon_expense_breakdown
                     },
-                    'payment_breakdown': list(morning_payment_breakdown),
-                    'order_type_breakdown': list(morning_order_type)
+                    'payment_breakdown': [
+                        {
+                            'payment_type': item['payment_type'],
+                            'count': item['count'],
+                            'total': str(item['total'])
+                        }
+                        for item in afternoon_payment_breakdown
+                    ],
+                    'order_type_breakdown': [
+                        {
+                            'order_type': item['order_type'],
+                            'count': item['count'],
+                            'total': str(item['total'])
+                        }
+                        for item in afternoon_order_type
+                    ]
                 },
                 
                 'night_shift': {
+                    'name': 'Night Shift',
                     'start_time': night_start.strftime('%I:%M %p'),
                     'end_time': night_end.strftime('%I:%M %p'),
                     'opening_balance': str(night_opening),
@@ -1871,8 +1997,22 @@ class AnalyticsDashboardView(APIView):
                         item['expense_type']: str(item['total'])
                         for item in night_expense_breakdown
                     },
-                    'payment_breakdown': list(night_payment_breakdown),
-                    'order_type_breakdown': list(night_order_type)
+                    'payment_breakdown': [
+                        {
+                            'payment_type': item['payment_type'],
+                            'count': item['count'],
+                            'total': str(item['total'])
+                        }
+                        for item in night_payment_breakdown
+                    ],
+                    'order_type_breakdown': [
+                        {
+                            'order_type': item['order_type'],
+                            'count': item['count'],
+                            'total': str(item['total'])
+                        }
+                        for item in night_order_type
+                    ]
                 },
                 
                 'overall': {
@@ -1881,6 +2021,7 @@ class AnalyticsDashboardView(APIView):
                     'total_profit': str(total_profit),
                     'total_orders': total_orders,
                     'final_closing_balance': str(night_closing),
+                    'avg_order_value': str(total_revenue / total_orders) if total_orders > 0 else '0.00',
                     'top_dishes': [
                         {
                             'dish_id': dish['dish__id'],
@@ -1911,7 +2052,6 @@ class AnalyticsDashboardView(APIView):
 class CategoryPerformanceView(APIView):
     """
     Analyze sales performance by dish category
-    Requires authentication
     """
     permission_classes = [IsAuthenticated]
     
@@ -1919,21 +2059,37 @@ class CategoryPerformanceView(APIView):
         try:
             date_str = request.GET.get('date')
             filter_type = request.GET.get('filter', 'today')
+            tz_str = request.GET.get('timezone', 'Asia/Kolkata')
+            
+            try:
+                tz = pytz.timezone(tz_str)
+            except:
+                tz = pytz.timezone('Asia/Kolkata')
             
             if filter_type == 'today' or not date_str:
-                target_date = datetime.now().date()
+                target_date = timezone.now().astimezone(tz).date()
             elif filter_type == 'yesterday':
-                target_date = (datetime.now() - timedelta(days=1)).date()
+                target_date = (timezone.now().astimezone(tz) - timedelta(days=1)).date()
             else:
                 target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
             
-            start_datetime = datetime.combine(target_date, time(7, 0))
-            end_datetime = datetime.combine(target_date + timedelta(days=1), time(2, 0))
+            # Afternoon: 10 AM - 4 PM
+            afternoon_start = tz.localize(datetime.combine(target_date, time(10, 0)))
+            afternoon_end = tz.localize(datetime.combine(target_date, time(16, 0)))
             
-            # Category-wise performance
+            # Night: 4 PM - 4 AM next day
+            night_start = tz.localize(datetime.combine(target_date, time(16, 0)))
+            night_end = tz.localize(datetime.combine(target_date + timedelta(days=1), time(4, 0)))
+            
+            afternoon_start_utc = afternoon_start.astimezone(pytz.UTC)
+            afternoon_end_utc = afternoon_end.astimezone(pytz.UTC)
+            night_start_utc = night_start.astimezone(pytz.UTC)
+            night_end_utc = night_end.astimezone(pytz.UTC)
+            
+            # Category-wise performance for full day
             category_stats = OrderItem.objects.filter(
-                order__created_at__gte=start_datetime,
-                order__created_at__lt=end_datetime
+                Q(order__created_at__gte=afternoon_start_utc, order__created_at__lt=afternoon_end_utc) |
+                Q(order__created_at__gte=night_start_utc, order__created_at__lt=night_end_utc)
             ).values(
                 'dish__category'
             ).annotate(
@@ -1968,6 +2124,9 @@ class CategoryPerformanceView(APIView):
             }, status=status.HTTP_200_OK)
         
         except Exception as e:
+            import traceback
+            print("Error in CategoryPerformanceView:")
+            print(traceback.format_exc())
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -1976,23 +2135,36 @@ class CategoryPerformanceView(APIView):
 # ==========================================
 class HourlyTrendsView(APIView):
     """
-    Hour-by-hour sales analysis
-    Requires authentication
+    Hour-by-hour sales analysis for afternoon and night shifts
     """
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
         try:
             date_str = request.GET.get('date')
-            target_date = datetime.strptime(date_str, '%Y-%m-%d').date() if date_str else datetime.now().date()
+            tz_str = request.GET.get('timezone', 'Asia/Kolkata')
             
-            start_datetime = datetime.combine(target_date, time(7, 0))
-            end_datetime = datetime.combine(target_date + timedelta(days=1), time(2, 0))
+            try:
+                tz = pytz.timezone(tz_str)
+            except:
+                tz = pytz.timezone('Asia/Kolkata')
+            
+            target_date = datetime.strptime(date_str, '%Y-%m-%d').date() if date_str else timezone.now().astimezone(tz).date()
+            
+            afternoon_start = tz.localize(datetime.combine(target_date, time(10, 0)))
+            afternoon_end = tz.localize(datetime.combine(target_date, time(16, 0)))
+            night_start = tz.localize(datetime.combine(target_date, time(16, 0)))
+            night_end = tz.localize(datetime.combine(target_date + timedelta(days=1), time(4, 0)))
+            
+            afternoon_start_utc = afternoon_start.astimezone(pytz.UTC)
+            afternoon_end_utc = afternoon_end.astimezone(pytz.UTC)
+            night_start_utc = night_start.astimezone(pytz.UTC)
+            night_end_utc = night_end.astimezone(pytz.UTC)
             
             # Hourly breakdown
             hourly_data = Order.objects.filter(
-                created_at__gte=start_datetime,
-                created_at__lt=end_datetime
+                Q(created_at__gte=afternoon_start_utc, created_at__lt=afternoon_end_utc) |
+                Q(created_at__gte=night_start_utc, created_at__lt=night_end_utc)
             ).annotate(
                 hour=TruncHour('created_at')
             ).values('hour').annotate(
@@ -2002,7 +2174,7 @@ class HourlyTrendsView(APIView):
             
             results = []
             for item in hourly_data:
-                hour_time = item['hour']
+                hour_time = item['hour'].astimezone(tz)
                 results.append({
                     'hour': hour_time.strftime('%I:00 %p'),
                     'hour_24': hour_time.hour,
@@ -2016,6 +2188,9 @@ class HourlyTrendsView(APIView):
             }, status=status.HTTP_200_OK)
         
         except Exception as e:
+            import traceback
+            print("Error in HourlyTrendsView:")
+            print(traceback.format_exc())
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -2024,68 +2199,94 @@ class HourlyTrendsView(APIView):
 # ==========================================
 class ComparisonView(APIView):
     """
-    Compare today vs yesterday / this week vs last week
-    Requires authentication
+    Compare today vs yesterday
     """
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
         try:
-            comparison_type = request.GET.get('type', 'day')  # 'day' or 'week'
+            tz_str = request.GET.get('timezone', 'Asia/Kolkata')
             
-            if comparison_type == 'day':
-                today = datetime.now().date()
-                yesterday = today - timedelta(days=1)
-                
-                today_start = datetime.combine(today, time(7, 0))
-                today_end = datetime.combine(today + timedelta(days=1), time(2, 0))
-                yesterday_start = datetime.combine(yesterday, time(7, 0))
-                yesterday_end = datetime.combine(yesterday + timedelta(days=1), time(2, 0))
-                
-                today_revenue = Order.objects.filter(
-                    created_at__gte=today_start,
-                    created_at__lt=today_end
-                ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
-                
-                yesterday_revenue = Order.objects.filter(
-                    created_at__gte=yesterday_start,
-                    created_at__lt=yesterday_end
-                ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
-                
-                today_orders = Order.objects.filter(
-                    created_at__gte=today_start,
-                    created_at__lt=today_end
-                ).count()
-                
-                yesterday_orders = Order.objects.filter(
-                    created_at__gte=yesterday_start,
-                    created_at__lt=yesterday_end
-                ).count()
-                
-                revenue_change = ((today_revenue - yesterday_revenue) / yesterday_revenue * 100) if yesterday_revenue > 0 else Decimal('0')
-                orders_change = ((today_orders - yesterday_orders) / yesterday_orders * 100) if yesterday_orders > 0 else 0
-                
-                return Response({
-                    'comparison_type': 'day',
-                    'current': {
-                        'date': today.isoformat(),
-                        'revenue': str(today_revenue),
-                        'orders': today_orders
-                    },
-                    'previous': {
-                        'date': yesterday.isoformat(),
-                        'revenue': str(yesterday_revenue),
-                        'orders': yesterday_orders
-                    },
-                    'change': {
-                        'revenue_percentage': str(round(revenue_change, 2)),
-                        'orders_percentage': str(round(orders_change, 2)),
-                        'revenue_difference': str(today_revenue - yesterday_revenue),
-                        'orders_difference': today_orders - yesterday_orders
-                    }
-                }, status=status.HTTP_200_OK)
+            try:
+                tz = pytz.timezone(tz_str)
+            except:
+                tz = pytz.timezone('Asia/Kolkata')
             
+            today = timezone.now().astimezone(tz).date()
+            yesterday = today - timedelta(days=1)
+            
+            # Today shifts
+            today_afternoon_start = tz.localize(datetime.combine(today, time(10, 0)))
+            today_afternoon_end = tz.localize(datetime.combine(today, time(16, 0)))
+            today_night_start = tz.localize(datetime.combine(today, time(16, 0)))
+            today_night_end = tz.localize(datetime.combine(today + timedelta(days=1), time(4, 0)))
+            
+            # Yesterday shifts
+            yesterday_afternoon_start = tz.localize(datetime.combine(yesterday, time(10, 0)))
+            yesterday_afternoon_end = tz.localize(datetime.combine(yesterday, time(16, 0)))
+            yesterday_night_start = tz.localize(datetime.combine(yesterday, time(16, 0)))
+            yesterday_night_end = tz.localize(datetime.combine(yesterday + timedelta(days=1), time(4, 0)))
+            
+            # Convert to UTC
+            today_afternoon_start_utc = today_afternoon_start.astimezone(pytz.UTC)
+            today_afternoon_end_utc = today_afternoon_end.astimezone(pytz.UTC)
+            today_night_start_utc = today_night_start.astimezone(pytz.UTC)
+            today_night_end_utc = today_night_end.astimezone(pytz.UTC)
+            
+            yesterday_afternoon_start_utc = yesterday_afternoon_start.astimezone(pytz.UTC)
+            yesterday_afternoon_end_utc = yesterday_afternoon_end.astimezone(pytz.UTC)
+            yesterday_night_start_utc = yesterday_night_start.astimezone(pytz.UTC)
+            yesterday_night_end_utc = yesterday_night_end.astimezone(pytz.UTC)
+            
+            # Today data
+            today_revenue = Order.objects.filter(
+                Q(created_at__gte=today_afternoon_start_utc, created_at__lt=today_afternoon_end_utc) |
+                Q(created_at__gte=today_night_start_utc, created_at__lt=today_night_end_utc)
+            ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
+            
+            today_orders = Order.objects.filter(
+                Q(created_at__gte=today_afternoon_start_utc, created_at__lt=today_afternoon_end_utc) |
+                Q(created_at__gte=today_night_start_utc, created_at__lt=today_night_end_utc)
+            ).count()
+            
+            # Yesterday data
+            yesterday_revenue = Order.objects.filter(
+                Q(created_at__gte=yesterday_afternoon_start_utc, created_at__lt=yesterday_afternoon_end_utc) |
+                Q(created_at__gte=yesterday_night_start_utc, created_at__lt=yesterday_night_end_utc)
+            ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
+            
+            yesterday_orders = Order.objects.filter(
+                Q(created_at__gte=yesterday_afternoon_start_utc, created_at__lt=yesterday_afternoon_end_utc) |
+                Q(created_at__gte=yesterday_night_start_utc, created_at__lt=yesterday_night_end_utc)
+            ).count()
+            
+            revenue_change = ((today_revenue - yesterday_revenue) / yesterday_revenue * 100) if yesterday_revenue > 0 else Decimal('0')
+            orders_change = ((today_orders - yesterday_orders) / yesterday_orders * 100) if yesterday_orders > 0 else 0
+            
+            return Response({
+                'comparison_type': 'day',
+                'current': {
+                    'date': today.isoformat(),
+                    'revenue': str(today_revenue),
+                    'orders': today_orders
+                },
+                'previous': {
+                    'date': yesterday.isoformat(),
+                    'revenue': str(yesterday_revenue),
+                    'orders': yesterday_orders
+                },
+                'change': {
+                    'revenue_percentage': str(round(revenue_change, 2)),
+                    'orders_percentage': str(round(orders_change, 2)),
+                    'revenue_difference': str(today_revenue - yesterday_revenue),
+                    'orders_difference': today_orders - yesterday_orders
+                }
+            }, status=status.HTTP_200_OK)
+        
         except Exception as e:
+            import traceback
+            print("Error in ComparisonView:")
+            print(traceback.format_exc())
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -2095,20 +2296,29 @@ class ComparisonView(APIView):
 class LowPerformingDishesView(APIView):
     """
     Identify dishes with low sales
-    Requires authentication
     """
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
         try:
             days = int(request.GET.get('days', 7))
-            end_date = datetime.now()
+            tz_str = request.GET.get('timezone', 'Asia/Kolkata')
+            
+            try:
+                tz = pytz.timezone(tz_str)
+            except:
+                tz = pytz.timezone('Asia/Kolkata')
+            
+            end_date = timezone.now().astimezone(tz)
             start_date = end_date - timedelta(days=days)
+            
+            start_date_utc = start_date.astimezone(pytz.UTC)
+            end_date_utc = end_date.astimezone(pytz.UTC)
             
             # Get dishes with low sales
             dishes_with_sales = OrderItem.objects.filter(
-                order__created_at__gte=start_date,
-                order__created_at__lt=end_date
+                order__created_at__gte=start_date_utc,
+                order__created_at__lt=end_date_utc
             ).values(
                 'dish__id',
                 'dish__name',
@@ -2122,8 +2332,8 @@ class LowPerformingDishesView(APIView):
             
             # Dishes with zero sales
             sold_dish_ids = OrderItem.objects.filter(
-                order__created_at__gte=start_date,
-                order__created_at__lt=end_date
+                order__created_at__gte=start_date_utc,
+                order__created_at__lt=end_date_utc
             ).values_list('dish__id', flat=True).distinct()
             
             zero_sales_dishes = Dish.objects.filter(
@@ -2167,6 +2377,9 @@ class LowPerformingDishesView(APIView):
             }, status=status.HTTP_200_OK)
         
         except Exception as e:
+            import traceback
+            print("Error in LowPerformingDishesView:")
+            print(traceback.format_exc())
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -2176,7 +2389,6 @@ class LowPerformingDishesView(APIView):
 class WorkerExpenseBreakdownView(APIView):
     """
     Detailed worker expense analysis
-    Requires authentication
     """
     permission_classes = [IsAuthenticated]
     
@@ -2184,22 +2396,36 @@ class WorkerExpenseBreakdownView(APIView):
         try:
             date_str = request.GET.get('date')
             filter_type = request.GET.get('filter', 'today')
+            tz_str = request.GET.get('timezone', 'Asia/Kolkata')
+            
+            try:
+                tz = pytz.timezone(tz_str)
+            except:
+                tz = pytz.timezone('Asia/Kolkata')
             
             if filter_type == 'today' or not date_str:
-                target_date = datetime.now().date()
+                target_date = timezone.now().astimezone(tz).date()
             elif filter_type == 'yesterday':
-                target_date = (datetime.now() - timedelta(days=1)).date()
+                target_date = (timezone.now().astimezone(tz) - timedelta(days=1)).date()
             else:
                 target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
             
-            start_datetime = datetime.combine(target_date, time(0, 0))
-            end_datetime = datetime.combine(target_date + timedelta(days=1), time(0, 0))
+            afternoon_start = tz.localize(datetime.combine(target_date, time(10, 0)))
+            afternoon_end = tz.localize(datetime.combine(target_date, time(16, 0)))
+            night_start = tz.localize(datetime.combine(target_date, time(16, 0)))
+            night_end = tz.localize(datetime.combine(target_date + timedelta(days=1), time(4, 0)))
+            
+            afternoon_start_utc = afternoon_start.astimezone(pytz.UTC)
+            afternoon_end_utc = afternoon_end.astimezone(pytz.UTC)
+            night_start_utc = night_start.astimezone(pytz.UTC)
+            night_end_utc = night_end.astimezone(pytz.UTC)
             
             # Worker-wise expenses
             worker_expenses = Expense.objects.filter(
-                expense_type='worker',
-                timestamp__gte=start_datetime,
-                timestamp__lt=end_datetime
+                expense_type='worker'
+            ).filter(
+                Q(timestamp__gte=afternoon_start_utc, timestamp__lt=afternoon_end_utc) |
+                Q(timestamp__gte=night_start_utc, timestamp__lt=night_end_utc)
             ).values(
                 'worker__id',
                 'worker__name',
@@ -2212,9 +2438,10 @@ class WorkerExpenseBreakdownView(APIView):
             
             # Category-wise breakdown
             category_breakdown = Expense.objects.filter(
-                expense_type='worker',
-                timestamp__gte=start_datetime,
-                timestamp__lt=end_datetime
+                expense_type='worker'
+            ).filter(
+                Q(timestamp__gte=afternoon_start_utc, timestamp__lt=afternoon_end_utc) |
+                Q(timestamp__gte=night_start_utc, timestamp__lt=night_end_utc)
             ).values('worker_category').annotate(
                 total=Sum('total_amount'),
                 count=Count('id')
@@ -2247,6 +2474,9 @@ class WorkerExpenseBreakdownView(APIView):
             }, status=status.HTTP_200_OK)
         
         except Exception as e:
+            import traceback
+            print("Error in WorkerExpenseBreakdownView:")
+            print(traceback.format_exc())
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -2256,7 +2486,6 @@ class WorkerExpenseBreakdownView(APIView):
 class MaterialExpenseBreakdownView(APIView):
     """
     Detailed material expense analysis
-    Requires authentication
     """
     permission_classes = [IsAuthenticated]
     
@@ -2264,22 +2493,36 @@ class MaterialExpenseBreakdownView(APIView):
         try:
             date_str = request.GET.get('date')
             filter_type = request.GET.get('filter', 'today')
+            tz_str = request.GET.get('timezone', 'Asia/Kolkata')
+            
+            try:
+                tz = pytz.timezone(tz_str)
+            except:
+                tz = pytz.timezone('Asia/Kolkata')
             
             if filter_type == 'today' or not date_str:
-                target_date = datetime.now().date()
+                target_date = timezone.now().astimezone(tz).date()
             elif filter_type == 'yesterday':
-                target_date = (datetime.now() - timedelta(days=1)).date()
+                target_date = (timezone.now().astimezone(tz) - timedelta(days=1)).date()
             else:
                 target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
             
-            start_datetime = datetime.combine(target_date, time(0, 0))
-            end_datetime = datetime.combine(target_date + timedelta(days=1), time(0, 0))
+            afternoon_start = tz.localize(datetime.combine(target_date, time(10, 0)))
+            afternoon_end = tz.localize(datetime.combine(target_date, time(16, 0)))
+            night_start = tz.localize(datetime.combine(target_date, time(16, 0)))
+            night_end = tz.localize(datetime.combine(target_date + timedelta(days=1), time(4, 0)))
+            
+            afternoon_start_utc = afternoon_start.astimezone(pytz.UTC)
+            afternoon_end_utc = afternoon_end.astimezone(pytz.UTC)
+            night_start_utc = night_start.astimezone(pytz.UTC)
+            night_end_utc = night_end.astimezone(pytz.UTC)
             
             # Material-wise expenses
             material_expenses = ExpenseItem.objects.filter(
-                expense__expense_type='material',
-                expense__timestamp__gte=start_datetime,
-                expense__timestamp__lt=end_datetime
+                expense__expense_type='material'
+            ).filter(
+                Q(expense__timestamp__gte=afternoon_start_utc, expense__timestamp__lt=afternoon_end_utc) |
+                Q(expense__timestamp__gte=night_start_utc, expense__timestamp__lt=night_end_utc)
             ).values(
                 'material__id',
                 'material__name',
@@ -2311,6 +2554,9 @@ class MaterialExpenseBreakdownView(APIView):
             }, status=status.HTTP_200_OK)
         
         except Exception as e:
+            import traceback
+            print("Error in MaterialExpenseBreakdownView:")
+            print(traceback.format_exc())
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -2320,13 +2566,19 @@ class MaterialExpenseBreakdownView(APIView):
 class WeeklySummaryView(APIView):
     """
     7-day summary report
-    Requires authentication
     """
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
         try:
-            end_date = datetime.now().date()
+            tz_str = request.GET.get('timezone', 'Asia/Kolkata')
+            
+            try:
+                tz = pytz.timezone(tz_str)
+            except:
+                tz = pytz.timezone('Asia/Kolkata')
+            
+            end_date = timezone.now().astimezone(tz).date()
             start_date = end_date - timedelta(days=6)
             
             daily_summary = []
@@ -2336,22 +2588,29 @@ class WeeklySummaryView(APIView):
             
             current_date = start_date
             while current_date <= end_date:
-                day_start = datetime.combine(current_date, time(7, 0))
-                day_end = datetime.combine(current_date + timedelta(days=1), time(2, 0))
+                afternoon_start = tz.localize(datetime.combine(current_date, time(10, 0)))
+                afternoon_end = tz.localize(datetime.combine(current_date, time(16, 0)))
+                night_start = tz.localize(datetime.combine(current_date, time(16, 0)))
+                night_end = tz.localize(datetime.combine(current_date + timedelta(days=1), time(4, 0)))
+                
+                afternoon_start_utc = afternoon_start.astimezone(pytz.UTC)
+                afternoon_end_utc = afternoon_end.astimezone(pytz.UTC)
+                night_start_utc = night_start.astimezone(pytz.UTC)
+                night_end_utc = night_end.astimezone(pytz.UTC)
                 
                 day_revenue = Order.objects.filter(
-                    created_at__gte=day_start,
-                    created_at__lt=day_end
+                    Q(created_at__gte=afternoon_start_utc, created_at__lt=afternoon_end_utc) |
+                    Q(created_at__gte=night_start_utc, created_at__lt=night_end_utc)
                 ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
                 
                 day_expenses = Expense.objects.filter(
-                    timestamp__gte=day_start,
-                    timestamp__lt=day_end
+                    Q(timestamp__gte=afternoon_start_utc, timestamp__lt=afternoon_end_utc) |
+                    Q(timestamp__gte=night_start_utc, timestamp__lt=night_end_utc)
                 ).aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total']
                 
                 day_orders = Order.objects.filter(
-                    created_at__gte=day_start,
-                    created_at__lt=day_end
+                    Q(created_at__gte=afternoon_start_utc, created_at__lt=afternoon_end_utc) |
+                    Q(created_at__gte=night_start_utc, created_at__lt=night_end_utc)
                 ).count()
                 
                 daily_summary.append({
@@ -2387,4 +2646,265 @@ class WeeklySummaryView(APIView):
             }, status=status.HTTP_200_OK)
         
         except Exception as e:
+            import traceback
+            print("Error in WeeklySummaryView:")
+            print(traceback.format_exc())
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+## report ====================
+
+
+
+class ShiftReportView(APIView):
+    """
+    API View to get shift-wise income and expense report
+    Only Afternoon and Night shifts
+    
+    Query Parameters:
+    - date: Date in YYYY-MM-DD format (default: today)
+    - shift: 'afternoon', 'night', or 'all' (default: 'all')
+    - timezone: Timezone string (default: 'Asia/Kolkata')
+    """
+    
+    def get(self, request):
+        try:
+            # Get query parameters
+            date_str = request.query_params.get('date', None)
+            shift_filter = request.query_params.get('shift', 'all')
+            tz_str = request.query_params.get('timezone', 'Asia/Kolkata')
+            
+            # Validate and set timezone
+            try:
+                tz = pytz.timezone(tz_str)
+            except pytz.exceptions.UnknownTimeZoneError:
+                tz = pytz.timezone('Asia/Kolkata')
+            
+            # Parse date
+            if date_str:
+                try:
+                    target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                except ValueError:
+                    return Response(
+                        {'error': 'Invalid date format. Use YYYY-MM-DD'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            else:
+                target_date = timezone.now().astimezone(tz).date()
+            
+            # Validate shift filter - ONLY afternoon and night
+            valid_shifts = ['afternoon', 'night', 'all']
+            if shift_filter not in valid_shifts:
+                return Response(
+                    {'error': f'Invalid shift type. Choose from: afternoon, night, all'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Generate shifts data - ONLY afternoon and night
+            if shift_filter == 'all':
+                shifts_to_process = ['afternoon', 'night']
+            else:
+                shifts_to_process = [shift_filter]
+            
+            shifts_data = []
+            for shift in shifts_to_process:
+                shift_data = self._calculate_shift_report(target_date, shift, tz)
+                shifts_data.append(shift_data)
+            
+            # Calculate daily totals
+            daily_total_income = sum(Decimal(str(shift['total_income'])) for shift in shifts_data)
+            daily_total_expense = sum(Decimal(str(shift['total_expense'])) for shift in shifts_data)
+            daily_total_labour = sum(Decimal(str(shift['worker_expense'])) for shift in shifts_data)
+            daily_total_material = sum(Decimal(str(shift['material_expense'])) for shift in shifts_data)
+            daily_profit = daily_total_income - daily_total_expense
+            
+            response_data = {
+                'date': target_date.strftime('%Y-%m-%d'),
+                'shifts': shifts_data,
+                'daily_total_income': str(daily_total_income),
+                'daily_total_expense': str(daily_total_expense),
+                'daily_total_labour': str(daily_total_labour),
+                'daily_total_material': str(daily_total_material),
+                'daily_profit': str(daily_profit)
+            }
+            
+            return Response(response_data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            print("=" * 80)
+            print("ERROR in ShiftReportView:")
+            print(traceback.format_exc())
+            print("=" * 80)
+            
+            return Response(
+                {'error': f'Internal server error: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def _get_shift_times(self, target_date, shift_type, tz):
+        """
+        Calculate shift start and end times
+        
+        Afternoon: 10:00 AM - 4:00 PM (same day)
+        Night: 4:00 PM - 4:00 AM (next day)
+        """
+        try:
+            if shift_type == 'afternoon':
+                shift_start = tz.localize(
+                    datetime.combine(target_date, time(10, 0, 0)), 
+                    is_dst=None
+                )
+                shift_end = tz.localize(
+                    datetime.combine(target_date, time(16, 0, 0)), 
+                    is_dst=None
+                )
+            
+            elif shift_type == 'night':
+                shift_start = tz.localize(
+                    datetime.combine(target_date, time(16, 0, 0)), 
+                    is_dst=None
+                )
+                next_day = target_date + timedelta(days=1)
+                shift_end = tz.localize(
+                    datetime.combine(next_day, time(4, 0, 0)), 
+                    is_dst=None
+                )
+            
+            else:
+                raise ValueError(f"Invalid shift type: {shift_type}")
+            
+            # Convert to UTC for database queries
+            shift_start_utc = shift_start.astimezone(pytz.UTC)
+            shift_end_utc = shift_end.astimezone(pytz.UTC)
+            
+            return shift_start, shift_end, shift_start_utc, shift_end_utc
+            
+        except (pytz.exceptions.NonExistentTimeError, pytz.exceptions.AmbiguousTimeError):
+            if shift_type == 'afternoon':
+                shift_start = tz.localize(
+                    datetime.combine(target_date, time(10, 0, 0)), 
+                    is_dst=False
+                )
+                shift_end = tz.localize(
+                    datetime.combine(target_date, time(16, 0, 0)), 
+                    is_dst=False
+                )
+            elif shift_type == 'night':
+                shift_start = tz.localize(
+                    datetime.combine(target_date, time(16, 0, 0)), 
+                    is_dst=False
+                )
+                next_day = target_date + timedelta(days=1)
+                shift_end = tz.localize(
+                    datetime.combine(next_day, time(4, 0, 0)), 
+                    is_dst=False
+                )
+            
+            shift_start_utc = shift_start.astimezone(pytz.UTC)
+            shift_end_utc = shift_end.astimezone(pytz.UTC)
+            
+            return shift_start, shift_end, shift_start_utc, shift_end_utc
+    
+    def _calculate_shift_report(self, target_date, shift_type, tz):
+        """Calculate complete report for a single shift"""
+        
+        shift_start, shift_end, shift_start_utc, shift_end_utc = self._get_shift_times(
+            target_date, shift_type, tz
+        )
+        
+        # ===== INCOME CALCULATION =====
+        orders = Order.objects.filter(
+            created_at__gte=shift_start_utc,
+            created_at__lt=shift_end_utc
+        )
+        
+        # Total income
+        income_data = orders.aggregate(
+            total_income=Sum('total_amount'),
+            order_count=Count('id')
+        )
+        total_income = income_data['total_income'] or Decimal('0.00')
+        order_count = income_data['order_count'] or 0
+        
+        # Income by payment type
+        cash_income = orders.filter(payment_type='cash').aggregate(
+            total=Sum('total_amount')
+        )['total'] or Decimal('0.00')
+        
+        upi_income = orders.filter(payment_type='upi').aggregate(
+            total=Sum('total_amount')
+        )['total'] or Decimal('0.00')
+        
+        card_income = orders.filter(payment_type='card').aggregate(
+            total=Sum('total_amount')
+        )['total'] or Decimal('0.00')
+        
+        # ===== EXPENSE CALCULATION =====
+        expenses = Expense.objects.filter(
+            timestamp__gte=shift_start_utc,
+            timestamp__lt=shift_end_utc
+        )
+        
+        # Total expenses
+        total_expense = expenses.aggregate(
+            total=Sum('total_amount')
+        )['total'] or Decimal('0.00')
+        
+        # Worker expenses - grouped by category
+        worker_expenses = expenses.filter(expense_type='worker')
+        worker_expense_total = worker_expenses.aggregate(
+            total=Sum('total_amount')
+        )['total'] or Decimal('0.00')
+        
+        # All worker expenses as list
+        worker_expenses_list = []
+        for exp in worker_expenses:
+            worker_expenses_list.append({
+                'worker_name': exp.worker.name if exp.worker else 'Unknown',
+                'category': exp.get_worker_category_display() if exp.worker_category else 'Other',
+                'description': exp.description,
+                'amount': float(exp.total_amount),
+                'time': exp.timestamp.astimezone(tz).strftime('%I:%M %p')
+            })
+        
+        # Material expenses - CHANGED TO SHOW INDIVIDUAL ITEMS
+        material_expenses = expenses.filter(expense_type='material')
+        material_expense_total = material_expenses.aggregate(
+            total=Sum('total_amount')
+        )['total'] or Decimal('0.00')
+        
+        # Get all material items directly
+        material_items_list = []
+        for exp in material_expenses:
+            items = ExpenseItem.objects.filter(expense=exp)
+            expense_time = exp.timestamp.astimezone(tz).strftime('%I:%M %p')
+            
+            for item in items:
+                material_items_list.append({
+                    'material_name': item.material.name,
+                    'quantity': float(item.quantity),
+                    'unit': item.material.get_unit_display(),
+                    'unit_price': float(item.unit_price),
+                    'amount': float(item.subtotal),
+                    'time': expense_time
+                })
+        
+        # ===== PROFIT CALCULATION =====
+        profit = total_income - total_expense
+        profit_margin = (profit / total_income * 100) if total_income > 0 else Decimal('0.00')
+        
+        return {
+            'shift_type': shift_type,
+            'shift_start': shift_start.strftime('%I:%M %p'),
+            'shift_end': shift_end.strftime('%I:%M %p'),
+            'total_income': str(total_income),
+            'order_count': order_count,
+            'cash_income': str(cash_income),
+            'upi_income': str(upi_income),
+            'card_income': str(card_income),
+            'total_expense': str(total_expense),
+            'worker_expense': str(worker_expense_total),
+            'material_expense': str(material_expense_total),
+            'worker_expenses_list': worker_expenses_list,
+            'material_expenses_list': material_items_list,  # Changed to individual items
+            'profit': str(profit),
+            'profit_margin': str(profit_margin)
+        }
