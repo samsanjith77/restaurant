@@ -977,9 +977,10 @@ class CreateOrderView(View):
             payment_type = data.get('payment_type', 'cash')
             addons = data.get('addons', [])
             
-            if not items_data:
+            # ✅ FIXED: Allow orders with ONLY addons/extras
+            if not items_data and not addons:
                 return JsonResponse({
-                    "error": "Order must contain at least one item"
+                    "error": "Order must contain at least one item or extra"
                 }, status=400)
             
             # Validate order_type
@@ -1002,12 +1003,12 @@ class CreateOrderView(View):
                     total_amount=0,
                     order_type=order_type,
                     payment_type=payment_type,
-                    addons=addons
+                    addons=addons  # This might not be needed if you're creating OrderItems for addons
                 )
                 
                 backend_total = Decimal('0.00')
                 
-                # Create order items from dishes
+                # Create order items from dishes (can be empty)
                 for item in items_data:
                     dish_id = item.get('dish_id')
                     quantity = int(item.get('quantity', 1))
@@ -1026,7 +1027,7 @@ class CreateOrderView(View):
                         price=item_price
                     )
                 
-                # Add addons/extras to total
+                # ✅ IMPROVED: Handle addons/extras (even if no main items)
                 for addon in addons:
                     addon_id = addon.get('dish_id')
                     addon_quantity = int(addon.get('quantity', 0))
@@ -1047,7 +1048,7 @@ class CreateOrderView(View):
                             price=addon_total
                         )
                 
-                # Verify total
+                # Verify total (even if only extras)
                 if abs(float(frontend_total) - float(backend_total)) > 0.01:
                     raise ValueError(
                         f"Total mismatch! Frontend sent ₹{frontend_total}, "
@@ -1069,7 +1070,6 @@ class CreateOrderView(View):
                 print_error_message = str(e)
                 print(f"⚠️ Printing failed for Bill #{order.id}: {e}")
                 # Don't fail the order creation if printing fails
-                # Just log the error and continue
             
             # Build response
             order_items = []
@@ -1111,7 +1111,7 @@ class CreateOrderView(View):
                 "message": response_message,
                 "order": order_data
             }, status=201)
-        
+            
         except Dish.DoesNotExist:
             return JsonResponse({"error": "Invalid dish ID"}, status=400)
         except ValueError as e:
@@ -2653,16 +2653,10 @@ class WeeklySummaryView(APIView):
 ## report ====================
 
 
-
 class ShiftReportView(APIView):
     """
-    API View to get shift-wise income and expense report
+    API View to get shift-wise income and expense report with CATEGORY BREAKDOWN
     Only Afternoon and Night shifts
-    
-    Query Parameters:
-    - date: Date in YYYY-MM-DD format (default: today)
-    - shift: 'afternoon', 'night', or 'all' (default: 'all')
-    - timezone: Timezone string (default: 'Asia/Kolkata')
     """
     
     def get(self, request):
@@ -2690,15 +2684,15 @@ class ShiftReportView(APIView):
             else:
                 target_date = timezone.now().astimezone(tz).date()
             
-            # Validate shift filter - ONLY afternoon and night
+            # Validate shift filter
             valid_shifts = ['afternoon', 'night', 'all']
             if shift_filter not in valid_shifts:
                 return Response(
-                    {'error': f'Invalid shift type. Choose from: afternoon, night, all'},
+                    {'error': f'Invalid shift type. Choose from: {", ".join(valid_shifts)}'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            # Generate shifts data - ONLY afternoon and night
+            # Generate shifts data
             if shift_filter == 'all':
                 shifts_to_process = ['afternoon', 'night']
             else:
@@ -2710,19 +2704,19 @@ class ShiftReportView(APIView):
                 shifts_data.append(shift_data)
             
             # Calculate daily totals
-            daily_total_income = sum(Decimal(str(shift['total_income'])) for shift in shifts_data)
-            daily_total_expense = sum(Decimal(str(shift['total_expense'])) for shift in shifts_data)
-            daily_total_labour = sum(Decimal(str(shift['worker_expense'])) for shift in shifts_data)
-            daily_total_material = sum(Decimal(str(shift['material_expense'])) for shift in shifts_data)
+            daily_total_income = sum(Decimal(shift['total_income']) for shift in shifts_data)
+            daily_total_expense = sum(Decimal(shift['total_expense']) for shift in shifts_data)
+            daily_total_labour = sum(Decimal(shift['worker_expense']) for shift in shifts_data)
+            daily_total_material = sum(Decimal(shift['material_expense']) for shift in shifts_data)
             daily_profit = daily_total_income - daily_total_expense
             
             response_data = {
                 'date': target_date.strftime('%Y-%m-%d'),
                 'shifts': shifts_data,
                 'daily_total_income': str(daily_total_income),
-                'daily_total_expense': str(daily_total_expense),
                 'daily_total_labour': str(daily_total_labour),
                 'daily_total_material': str(daily_total_material),
+                'daily_total_expense': str(daily_total_expense),
                 'daily_profit': str(daily_profit)
             }
             
@@ -2733,163 +2727,140 @@ class ShiftReportView(APIView):
             print("ERROR in ShiftReportView:")
             print(traceback.format_exc())
             print("=" * 80)
-            
             return Response(
                 {'error': f'Internal server error: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
     def _get_shift_times(self, target_date, shift_type, tz):
-        """
-        Calculate shift start and end times
-        
-        Afternoon: 10:00 AM - 4:00 PM (same day)
-        Night: 4:00 PM - 4:00 AM (next day)
-        """
+        """Calculate shift start/end times"""
         try:
             if shift_type == 'afternoon':
-                shift_start = tz.localize(
-                    datetime.combine(target_date, time(10, 0, 0)), 
-                    is_dst=None
-                )
-                shift_end = tz.localize(
-                    datetime.combine(target_date, time(16, 0, 0)), 
-                    is_dst=None
-                )
-            
+                shift_start = tz.localize(datetime.combine(target_date, time(10, 0, 0)))
+                shift_end = tz.localize(datetime.combine(target_date, time(16, 0, 0)))
             elif shift_type == 'night':
-                shift_start = tz.localize(
-                    datetime.combine(target_date, time(16, 0, 0)), 
-                    is_dst=None
-                )
+                shift_start = tz.localize(datetime.combine(target_date, time(16, 0, 0)))
                 next_day = target_date + timedelta(days=1)
-                shift_end = tz.localize(
-                    datetime.combine(next_day, time(4, 0, 0)), 
-                    is_dst=None
-                )
-            
+                shift_end = tz.localize(datetime.combine(next_day, time(4, 0, 0)))
             else:
                 raise ValueError(f"Invalid shift type: {shift_type}")
             
-            # Convert to UTC for database queries
             shift_start_utc = shift_start.astimezone(pytz.UTC)
             shift_end_utc = shift_end.astimezone(pytz.UTC)
-            
             return shift_start, shift_end, shift_start_utc, shift_end_utc
             
         except (pytz.exceptions.NonExistentTimeError, pytz.exceptions.AmbiguousTimeError):
+            # Fallback with explicit is_dst=False
             if shift_type == 'afternoon':
-                shift_start = tz.localize(
-                    datetime.combine(target_date, time(10, 0, 0)), 
-                    is_dst=False
-                )
-                shift_end = tz.localize(
-                    datetime.combine(target_date, time(16, 0, 0)), 
-                    is_dst=False
-                )
-            elif shift_type == 'night':
-                shift_start = tz.localize(
-                    datetime.combine(target_date, time(16, 0, 0)), 
-                    is_dst=False
-                )
+                shift_start = tz.localize(datetime.combine(target_date, time(10, 0, 0)), is_dst=False)
+                shift_end = tz.localize(datetime.combine(target_date, time(16, 0, 0)), is_dst=False)
+            else:  # night
+                shift_start = tz.localize(datetime.combine(target_date, time(16, 0, 0)), is_dst=False)
                 next_day = target_date + timedelta(days=1)
-                shift_end = tz.localize(
-                    datetime.combine(next_day, time(4, 0, 0)), 
-                    is_dst=False
-                )
+                shift_end = tz.localize(datetime.combine(next_day, time(4, 0, 0)), is_dst=False)
             
             shift_start_utc = shift_start.astimezone(pytz.UTC)
             shift_end_utc = shift_end.astimezone(pytz.UTC)
-            
             return shift_start, shift_end, shift_start_utc, shift_end_utc
     
     def _calculate_shift_report(self, target_date, shift_type, tz):
         """Calculate complete report for a single shift"""
-        
         shift_start, shift_end, shift_start_utc, shift_end_utc = self._get_shift_times(
             target_date, shift_type, tz
         )
         
-        # ===== INCOME CALCULATION =====
+        # ===== INCOME: Orders in shift time =====
         orders = Order.objects.filter(
             created_at__gte=shift_start_utc,
             created_at__lt=shift_end_utc
         )
         
-        # Total income
-        income_data = orders.aggregate(
-            total_income=Sum('total_amount'),
-            order_count=Count('id')
-        )
-        total_income = income_data['total_income'] or Decimal('0.00')
-        order_count = income_data['order_count'] or 0
+        total_income = orders.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+        order_count = orders.count()
         
-        # Income by payment type
+        # Payment type totals
         cash_income = orders.filter(payment_type='cash').aggregate(
             total=Sum('total_amount')
         )['total'] or Decimal('0.00')
-        
         upi_income = orders.filter(payment_type='upi').aggregate(
             total=Sum('total_amount')
         )['total'] or Decimal('0.00')
-        
         card_income = orders.filter(payment_type='card').aggregate(
             total=Sum('total_amount')
         )['total'] or Decimal('0.00')
         
-        # ===== EXPENSE CALCULATION =====
+        # ✅ FIXED: Category breakdown via OrderItem → Dish
+        def get_category_breakdown(payment_type):
+            category_totals = OrderItem.objects.filter(
+                order__created_at__gte=shift_start_utc,
+                order__created_at__lt=shift_end_utc,
+                order__payment_type=payment_type
+            ).values('dish__category').annotate(
+                total_amount=Sum('price'),
+                item_count=Count('id')
+            ).order_by('-total_amount')
+            
+            return [
+                {
+                    'category_display': cat['dish__category'] or 'Uncategorized',
+                    'amount': str(cat['total_amount'] or Decimal('0.00')),
+                    'item_count': cat['item_count'] or 0
+                }
+                for cat in category_totals
+            ]
+        
+        cash_category_breakdown = get_category_breakdown('cash')
+        upi_category_breakdown = get_category_breakdown('upi')
+        card_category_breakdown = get_category_breakdown('card')
+        
+        # ===== EXPENSES =====
+        from .models import Expense, ExpenseItem  # Adjust import path
+        
         expenses = Expense.objects.filter(
             timestamp__gte=shift_start_utc,
             timestamp__lt=shift_end_utc
         )
+        total_expense = expenses.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
         
-        # Total expenses
-        total_expense = expenses.aggregate(
-            total=Sum('total_amount')
-        )['total'] or Decimal('0.00')
-        
-        # Worker expenses - grouped by category
+        # Worker expenses
         worker_expenses = expenses.filter(expense_type='worker')
         worker_expense_total = worker_expenses.aggregate(
             total=Sum('total_amount')
         )['total'] or Decimal('0.00')
         
-        # All worker expenses as list
         worker_expenses_list = []
         for exp in worker_expenses:
             worker_expenses_list.append({
-                'worker_name': exp.worker.name if exp.worker else 'Unknown',
-                'category': exp.get_worker_category_display() if exp.worker_category else 'Other',
-                'description': exp.description,
+                'worker_name': getattr(exp.worker, 'name', 'Unknown'),
+                'category': getattr(exp, 'get_worker_category_display', lambda: 'Other')(),
+                'description': exp.description or '',
                 'amount': float(exp.total_amount),
                 'time': exp.timestamp.astimezone(tz).strftime('%I:%M %p')
             })
         
-        # Material expenses - CHANGED TO SHOW INDIVIDUAL ITEMS
+        # Material expenses
         material_expenses = expenses.filter(expense_type='material')
         material_expense_total = material_expenses.aggregate(
             total=Sum('total_amount')
         )['total'] or Decimal('0.00')
         
-        # Get all material items directly
         material_items_list = []
         for exp in material_expenses:
             items = ExpenseItem.objects.filter(expense=exp)
             expense_time = exp.timestamp.astimezone(tz).strftime('%I:%M %p')
-            
             for item in items:
                 material_items_list.append({
                     'material_name': item.material.name,
                     'quantity': float(item.quantity),
-                    'unit': item.material.get_unit_display(),
+                    'unit': getattr(item.material, 'get_unit_display', lambda: '')(),
                     'unit_price': float(item.unit_price),
                     'amount': float(item.subtotal),
                     'time': expense_time
                 })
         
-        # ===== PROFIT CALCULATION =====
+        # Profit
         profit = total_income - total_expense
-        profit_margin = (profit / total_income * 100) if total_income > 0 else Decimal('0.00')
+        profit_margin = float((profit / total_income * 100)) if total_income > 0 else 0.0
         
         return {
             'shift_type': shift_type,
@@ -2900,11 +2871,15 @@ class ShiftReportView(APIView):
             'cash_income': str(cash_income),
             'upi_income': str(upi_income),
             'card_income': str(card_income),
+            # ✅ PERFECT CATEGORY BREAKDOWNS
+            'cash_category_breakdown': cash_category_breakdown,
+            'upi_category_breakdown': upi_category_breakdown,
+            'card_category_breakdown': card_category_breakdown,
             'total_expense': str(total_expense),
             'worker_expense': str(worker_expense_total),
             'material_expense': str(material_expense_total),
             'worker_expenses_list': worker_expenses_list,
-            'material_expenses_list': material_items_list,  # Changed to individual items
+            'material_expenses_list': material_items_list,
             'profit': str(profit),
             'profit_margin': str(profit_margin)
         }
